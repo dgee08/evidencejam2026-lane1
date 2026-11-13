@@ -1,0 +1,23 @@
+graph_id: test-minimal-1
+schema_version: 0.10.0
+provenance:
+  causal_mosaic_version: 0.10.0
+nodes:
+- id: causal_mosaic:planting_test_0001
+  name: Planting of Sanguinaria canadensis ramets
+  entity_type: management_intervention
+  entity_term: planting of Sanguinaria canadensis
+  state_or_change_qualifier: introduced
+- id: causal_mosaic:alliaria_test_0002
+  name: Decreased Alliaria petiolata
+  entity_type: taxon
+  entity_term: Alliaria petiolata
+  state_or_change_qualifier: decreased
+edges:
+- id: causal_mosaic:edge_test0001
+  subject: causal_mosaic:planting_test_0001
+  predicate: causes
+  object: causal_mosaic:alliaria_test_0002
+  causal_language: direct_causal
+  philosophical_accounts:
+  - interventionist
