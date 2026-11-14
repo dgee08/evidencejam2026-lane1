@@ -2,33 +2,35 @@ graph_id: causal_mosaic:graph_f1
 schema_version: 0.10.0
 provenance:
   causal_mosaic_version: 0.10.0
-  created: '2026-11-14T04:50:41+00:00'
+  created: '2026-11-14T05:25:17+00:00'
   project: hackathon
   exporter_version: phase1-0.1 (Qwen3.8-27B)
 source_documents:
 - document_id: doc1
 nodes:
-- name: Initial Sanguinaria canadensis ramet density
+- name: Present initial Sanguinaria canadensis ramet density
   entity_type: taxon
   entity_term: NCBITaxon:3472
   measured_attribute: initial ramet density
+  state_or_change_qualifier: present
   life_stage: ramet_or_clonal_unit
-  id: causal_mosaic:initial_sanguinaria_canadensis_ramet_den_8b9c
-- name: Decreased Alliaria petiolata abundance
+  id: causal_mosaic:present_initial_sanguinaria_canadensis_r_f7c1
+- name: Suppressed Alliaria petiolata
   entity_type: taxon
   entity_term: NCBITaxon:126270
-  measured_attribute: abundance
-  state_or_change_qualifier: decreased
+  measured_attribute: suppression
+  state_or_change_qualifier: occurred
   life_stage: not_specified
-  id: causal_mosaic:decreased_alliaria_petiolata_abundance_e5f7
+  id: causal_mosaic:suppressed_alliaria_petiolata_e192
 edges:
-- subject: causal_mosaic:initial_sanguinaria_canadensis_ramet_den_8b9c
+- subject: causal_mosaic:present_initial_sanguinaria_canadensis_r_f7c1
   predicate: causes
-  object: causal_mosaic:decreased_alliaria_petiolata_abundance_e5f7
+  object: causal_mosaic:suppressed_alliaria_petiolata_e192
   causal_language: direct_causal
   negated: false
   philosophical_accounts:
   - interventionist
+  - counterfactual
   id: f1-e1
   original_sentence: In a field additive-series experiment in a degraded woodlot near
     Waterloo, Ontario, as of 2000 (transplanted 1997), initial Sanguinaria canadensis
