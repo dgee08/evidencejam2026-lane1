@@ -64,7 +64,7 @@ Description of how pipeline.py works
 
 ## How merge_graphs.py works
 
-Description of how merge_graphs.py works
+This script merges per-article Casual Mosaic graphs into a single validated CasualGraph. It is run from the project root and it reads each article JSON in output/articles/ with bibliographic metadata from corpus/index.csv. Nodes are deduplicated across articles with the first node seen winning. Edges are remapped to the merged node IDs, tagged with their source article slug, and given new hashed IDs. Each edge is traceable to its source as they are not deduplicated across articles. As a result, with the provenance metadata and a source_documents list limited to articles with a DOI, is written to output/merged_causal_graph.yaml and .json. The schema version and corpus description are hard-coded so merged nodes do not record which articles they came from, and the script exits with an error if no articles load. 
 
 ## Running the Program
 
