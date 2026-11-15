@@ -180,23 +180,35 @@ EVIDENCE_CURIES = {
     "survey": "ECO:0000007",
 }
 
+CURIE_RE = re.compile(r"^([A-Za-z0-9]+:[A-Za-z0-9_]+)\s*\|\s*(.+)$")
+
+def parse_curie_field(value: str) -> tuple[str | None, str]:
+    """Parse 'CURIE | label' → (curie, label). Returns (None, original) if no CURIE."""
+    if not value or "|" not in value:
+        return None, value
+    m = CURIE_RE.match(value.strip())
+    if m:
+        return m.group(1), m.group(2).strip()
+    return None, value  # malformed pipe, treat as free text
+
 def enrich_node(n, sent):
+    """Parse CURIEs from LLM output (format: 'CURIE | label'), keep life_stage/applied_to logic."""
+    # Parse entity_term
+    curie, label = parse_curie_field(n.get("entity_term", ""))
+    if curie:
+        n["entity_term"] = curie
+    # else keep free-text label
+
+    # Parse measured_attribute
+    curie, label = parse_curie_field(n.get("measured_attribute", ""))
+    if curie:
+        n["measured_attribute"] = curie
+
+    # Keep existing life_stage/applied_to logic (substring match on sentence text)
     term_lower = (n.get("entity_term") or "").lower().strip()
     attr_lower = (n.get("measured_attribute") or "").lower().strip()
     q = n.get("state_or_change_qualifier", "")
     etype = n.get("entity_type", "")
-
-    if etype == "taxon":
-        for k, v in TAXON_CURIES.items():
-            if k in term_lower:
-                n["entity_term"] = v
-                break
-
-    if attr_lower:
-        for k, v in ATTR_CURIES.items():
-            if k in attr_lower:
-                n["measured_attribute"] = v
-                break
 
     if etype in ("taxon", "management_intervention"):
         sent_lower = sent.lower()
@@ -562,15 +574,16 @@ def parse_claims(txt):
 
 async def ask_async(numbered):
     """Async version matching original pipeline settings."""
-    for attempt in range(4):
+    for attempt in range(2):  # Reduced from 4 attempts
         try:
             r = await aclient.chat.completions.create(
-                model=MODEL, temperature=0, max_tokens=8192,
-                messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": numbered}])
+                model=MODEL, temperature=0, max_tokens=2048,  # Reduced to prevent reasoning timeout
+                messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": numbered}],
+                extra_body={"reasoning": {"max_tokens": 512}})  # Limit Qwen3 reasoning
             break
         except Exception as e:
             print(f"  request failed: {type(e).__name__} attempt {attempt + 1}", flush=True)
-            await asyncio.sleep(2 * (2 ** attempt))  # Faster backoff: 2, 4, 8, 16s
+            await asyncio.sleep(2 * (2 ** attempt))  # 2, 4s
     else:
         return None
 
@@ -583,7 +596,8 @@ async def ask_async(numbered):
         if choice.finish_reason == "length":
             STATS["truncated"] = STATS.get("truncated", 0) + 1
 
-    txt = re.sub(r"\(think\).*?\(/think\)", "", choice.message.content or "", flags=re.S)
+    txt = re.sub(r"<think>.*?</think>", "", choice.message.content or "", flags=re.S)
+    txt = re.sub(r"\(think\).*?\(/think\)", "", txt, flags=re.S)
     txt = re.sub(r"[\[\(]think[\]\)].*?[\[\(]/think[\]\)]", "", txt, flags=re.S)
     claims = parse_claims(txt)
     if claims is None:

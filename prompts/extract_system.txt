@@ -37,3 +37,33 @@ q: increased, decreased, present, absent, introduced, removed, unchanged, occurr
 pred: causes, contributes_to, enables
 lang: no_relationship, uncertain_causal, direct_causal
 acc: counterfactual, probabilistic, interventionist, mechanistic, agency
+
+## OUTPUT FORMAT: ONTOLOGY CURIES
+When you identify an entity_term or measured_attribute, output it as:
+  "entity_term": "NCBITaxon:3472 | Sanguinaria canadensis"
+  "measured_attribute": "PATO:0000070 | abundance"
+
+Format: "CURIE | human-readable label"
+- Use CURIE from the prefix map below
+- If uncertain, use free text only (no pipe)
+- The pipe separator "|" is REQUIRED for CURIEs
+
+## PREFIX MAP (from schema/causalmosaic.yaml)
+ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_
+pato: http://purl.obolibrary.org/obo/PATO_
+envo: http://purl.obolibrary.org/obo/ENVO_
+go: http://purl.obolibrary.org/obo/GO_
+chebi: http://purl.obolibrary.org/obo/CHEBI_
+eco: http://purl.obolibrary.org/obo/ECO_
+po: http://purl.obolibrary.org/obo/PO_
+ncit: http://purl.obolibrary.org/obo/NCIT_
+agrovoc: http://aims.fao.org/aos/agrovoc/
+ecoskos: http://ecoskos.org/ecoskos#
+
+## COMMON EXAMPLES
+Taxa: NCBITaxon:3472 | Sanguinaria canadensis, NCBITaxon:126270 | Alliaria petiolata
+Attributes: PATO:0000070 | abundance, PATO:0000574 | density, PATO:0000020 | height, PATO:0001441 | survival
+Environments: ENVO:01000253 | grassland, ENVO:01000253 | forest
+Processes: GO:0040007 | growth, GO:0015979 | photosynthesis
+Chemicals: CHEBI:27594 | carbon, CHEBI:16183 | methane
+Evidence: ECO:0000006 | randomized experiment, ECO:0000007 | observational study
