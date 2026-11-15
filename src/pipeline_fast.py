@@ -561,12 +561,11 @@ def parse_claims(txt):
     return None
 
 async def ask_async(numbered):
-    """Async version with faster retry backoff."""
+    """Async version matching original pipeline settings."""
     for attempt in range(4):
         try:
             r = await aclient.chat.completions.create(
-                model=MODEL, temperature=0, max_tokens=4096,  # Reduced from 8192
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                model=MODEL, temperature=0, max_tokens=8192,
                 messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": numbered}])
             break
         except Exception as e:
