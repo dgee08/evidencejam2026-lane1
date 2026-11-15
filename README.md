@@ -141,46 +141,30 @@ Faithfulness means the graph says only what the articles say. The pipeline treat
 ---
  
 ### Honest limits
- 
-These are real failures we found in the pipeline.
- 
-1. **Model replies that get cut off.**
-   - **What happens:** We limit how long the model's reply can be (3,000 tokens). When a batch of sentences contains many claims, the reply can stop in the middle of a claim. In one test, a batch of just 16 sentences from a results section hit the limit.
-   - **Effect:** The pipeline keeps the complete claims from before the cut, so the claims at the end of a busy batch are lost without any warning.
-   - **Workaround:** We ask the model to write its answer in a compact form, which roughly halved reply length in our test. If cutoffs still happen, lower `CAMO_MAX_SENT` to send fewer sentences per batch.
-2. **Bigger batches save tokens but find fewer claims.**
-   - **What happens:** Every call to the model repeats our instructions, so fewer, larger batches use fewer tokens overall. But the model finds fewer claims when it is given a very long list of sentences. On one article, a single call with 92 sentences kept 6 claims, while three calls of up to 40 sentences kept 9.
-   - **Effect:** Saving tokens can cost us claims. We only tested this on one article, so the best batch size for the whole corpus is unknown.
-   - **Workaround:** The default is 40 sentences per batch. We did not tune it further.
-3. **Good claims thrown out by our wording check.**
-   - **What happens:** To catch made-up claims, we check that the words the model names as cause and effect appear in the sentence. This check is strict, so it rejects claims where the model used a full name or a different form of a word (for example "carbon" where the paper says "C", or "copper" where it says "Cu").
-   - **Effect:** On one article, between 4 and 7 of the model's roughly 15 claims were rejected this way. We did not read the rejected claims, so we do not know how many were actually good. We have since told the model to reuse the sentence's own words, but we have not tested whether that helps across the corpus.
-4. **Causal wording that is too strong.**
-   - **What happens:** The model is only allowed a few relationship types, and "is associated with" is not one of them. A plain comparison or a "contributes to" statement is often labelled as a direct cause.
-   - **Effect:** In our test output, a comparison of tree density against control sites and a finding that metals built up in the soil were both labelled as direct causes. Some claims sound more certain than the authors' words support.
-5. **Misread sentences and the wrong measurement.**
-   - **What happens:** The model sometimes picks the wrong outcome for a sentence, and sometimes attaches a measurement that does not fit.
-   - **Effect:** A sentence about how long it takes to pay back emissions was recorded as "decreased emissions" in one run and "increased biomass" in another. Rates, durations and amounts were often labelled as "abundance", giving nodes like "increased abundance of carbon sequestration". The output is accepted by the schema, but these entries are wrong.
-6. **Few standard ontology terms on the main subjects.**
-   - **What happens:** The model only gives a standard ontology code when its instructions push it to, and otherwise writes plain text. In our sample outputs, some measurements had standard codes, but none of the main subjects (the species, processes or variables) did. At one point, rewording the instructions removed the codes entirely.
-   - **Effect:** Most nodes are labelled with plain text instead of standard terms. We do not check the model's codes against the real ontology, so a wrong code would pass unnoticed.
-   - **Advice:** Count how many standard codes are in the output before relying on the ontology coverage.
-7. **Results change between runs, and failures waste work.**
-   - **What happens:** The same article produced 11, 10, 8 and 6 links across runs where we only made small changes to the instructions or batch size. Also, if one batch for an article fails, the pipeline discards the batches that worked and marks the whole article as failed.
-   - **Effect:** Results are not repeatable, and a single failed batch means paying for the whole article again on retry.
-8. **The extra detail fields are off by default and unreliable.** A separate step can add details such as dose, comparison group, strength and type of evidence. It only runs when `CAMO_ENRICH=1`. Our test outputs were made without it, and we did not test it on the full corpus. Problems we found or expect:
-   - It picks a comparison label (such as "higher" or "lower") from the first matching word, and that word is not always one the schema accepts. One correct link was rejected because of this single optional field, and the pipeline then dropped the whole link.
-   - When it cannot tell which species a dose refers to, it assumes *Sanguinaria canadensis*. That species comes from our worked example and is wrong for most other papers.
-   - It assumes a planting year (1997 for one article, otherwise three years before publication) to work out time since the intervention.
-   - It falls back to "case study" as the type of evidence, "theoretical" as the basis for direction, and "assertional" as the scope for every claim.
-   - Its confidence grade comes from the authors' wording and whether the word "significant" appears, not from the quality of the evidence.
-9. **One ontology code used for many different things.**
-   - **What happens:** Our built-in lookup lists give the same code to many unrelated terms. Forest, lake, river, marsh and peatland all share one habitat code. Many different measurements share one or two measurement codes, and several chemicals and environmental factors share a single code.
-   - **Effect:** The codes look valid, so the graph passes the schema check, but the meaning is wrong.
-   - **Advice:** Plain-text labels are safer than these codes.
-10. **Not tested on the whole corpus.**
-    - **What happens:** We ran the pipeline on a few articles, not all 308.
-    - **Effect:** We have not measured the total run time or the energy used per article. Also, the pipeline skips any article that already has a saved result in `output/articles/`, so old results made with earlier instructions can be reused unless `CAMO_FORCE=1` is set.
+
+These are real problems we found. Where we measured something, we say what; everything was tested on a few articles, not all 308.
+
+| # | Limit | What we saw | Mitigation |
+| - | ----- | ----------- | ---------- |
+| 1 | **Replies cut off** | A dense batch (16 results sentences) hit the 3,000-token reply cap, and the claims at the end were lost silently. | Compact JSON output halved reply length. Lower `CAMO_MAX_SENT` if it recurs. |
+| 2 | **Batch size trades tokens for claims** | One 92-sentence call kept 6 claims. Three calls of up to 40 kept 9. | Default is 40. Tuned on one article only. |
+| 3 | **Wording check rejects good claims** | On one article, 4 to 7 of about 15 model claims were dropped for not matching the sentence (e.g. "carbon" vs "C"). We never read the rejects. | Prompt now says to reuse the sentence's words. Untested at scale. |
+| 4 | **Causal wording too strong** | "Associated with" isn't an allowed relationship, so comparisons and "contributes to" often come out as direct causes. | None yet. Allow weaker relationships. |
+| 5 | **Misread sentences and wrong measurements** | A payback-time sentence became "decreased emissions" in one run and "increased biomass" in another. Rates and durations were labelled "abundance". | Prompt rules reduced this but did not remove it. |
+| 6 | **Few ontology codes, unchecked** | Measurements often had PATO codes, but main subjects (species, processes, variables) usually did not. Codes are not verified against real ontology files. | Count codes in the output before relying on them. |
+| 7 | **Results vary and failures waste work** | One article gave 11, 10, 8 and 6 edges across small changes. One failed batch discards the good batches too. | None yet. Retry only the failed batch. |
+| 8 | **Not run on the full corpus** | Total run time and energy per article are unmeasured. Cached results in `output/articles/` are reused unless `CAMO_FORCE=1`. | Set `CAMO_FORCE=1` for a clean run. |
+
+#### Optional enrichment step (off by default)
+
+The rule-based step that adds dose, comparator, strength and evidence fields runs only with `CAMO_ENRICH=1`. Our outputs were made without it. We do not trust it yet:
+
+- **Invented defaults:** it assumes *Sanguinaria canadensis* when a dose's species is unclear (from our worked example), assumes a planting year, and falls back to "case study", "theoretical" and "assertional".
+- **Bad optional fields:** a comparison label the schema did not accept caused one correct edge to be dropped.
+- **Coarse code tables:** its lookup lists give one code to many unrelated terms (forest, lake, river and marsh share a habitat code), so codes look valid but the meaning is wrong.
+- **Weak confidence grade:** it comes from the authors' wording and the word "significant", not from the evidence.
+
+Plain-text labels are safer than these codes.
 
 ---
  
