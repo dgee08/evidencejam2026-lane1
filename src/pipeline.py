@@ -12,7 +12,7 @@ WORKERS = int(os.environ.get("CAMO_WORKERS", "3"))       # Reduced from 10
 BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "180"))  # More time
 LIMIT = int(os.environ.get("CAMO_LIMIT", "0"))
 FORCE = os.environ.get("CAMO_FORCE") == "1"
-MAX_SENT = int(os.environ.get("CAMO_MAX_SENT", "100"))   # Larger batches = fewer API calls, better for flaky endpoint
+MAX_SENT = int(os.environ.get("CAMO_MAX_SENT", "40"))   # Larger batches = fewer API calls, better for flaky endpoint
 DEADLINE = time.time() + BUDGET_MIN * 60
 LOCK = threading.Lock()
 STATS = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "articles": 0, "claims": 0}
@@ -22,11 +22,6 @@ def enum(n): return set(schema["enums"][n]["permissible_values"])
 PRED = {"causes", "contributes_to", "enables"} & enum("CausalPredicateEnum")
 LANG = enum("ClaimStrengthEnum") - {"associational"}
 ENRICH = os.environ.get("CAMO_ENRICH") == "1"
-# Codes copied from the organizers' README and the hand-checked example ONLY.
-VERIFIED_TERMS = {"sanguinaria canadensis": "NCBITaxon:3472", "alliaria petiolata": "NCBITaxon:126270"}
-VERIFIED_ATTRS = {"abundance": "PATO:0000070", "density": "PATO:0000574"}
-def resolve(term, table):
-    return table.get(term.strip().lower(), term.strip())
 ACC, QUAL, ETYPE = enum("PhilosophicalAccountEnum"), enum("StateOrChangeQualifierEnum"), enum("EntityTypeEnum")
 VALIDATOR = Validator(SCHEMA, validation_plugins=[JsonschemaValidationPlugin(closed=True)])
 
@@ -361,7 +356,7 @@ def parse_temporal(sent, slug):
     m = TEMPORAL_RE.search(sent)
     if m:
         year = int(m.group(1))
-        transplant_year = 1997 if "YKQQ" in slug else year - 3
+        transplant_year = year - 3
         temp["time_since_intervention_months"] = (year - transplant_year) * 12
         temp["time_since_intervention_text"] = m.group(0)
     m = MONTHS_RE.search(sent)
@@ -723,7 +718,7 @@ async def process_article_async(path):
 
     log["kept"] = len(claims)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(graph, ensure_ascii=False), encoding="utf-8")
+    cache.write_text(json.dumps(graph, indent=2, ensure_ascii=False), encoding="utf-8")
     (OUT / "articles" / f"{slug}.log.json").write_text(json.dumps(log, indent=1, ensure_ascii=False), encoding="utf-8")
 
     with LOCK:
@@ -749,13 +744,15 @@ def in_sentence(term, sent):
 
 def node(slug, n):
     q = n.get("q") or ""
-    a = (n.get("attr") or "").split("|")[-1].strip()
-    t = n["term"].split("|")[-1].strip()
-    d = {"id": f"causal_mosaic:{slug.lower()}_{h(slug, n.get('type', ''), t.lower(), a.lower(), q)}",
-         "name": " ".join(x for x in [q, a, "of" if a else "", t] if x),
-         "entity_term": resolve(t, VERIFIED_TERMS)}
+    t_curie, t_label = parse_curie_field(n["term"])
+    a_curie, a_label = parse_curie_field(n.get("attr") or "")
+    term = t_curie or t_label
+    attr = a_curie or a_label
+    d = {"id": f"causal_mosaic:{slug.lower()}_{h(slug, n.get('type', ''), t_label.lower(), a_label.lower(), q)}",
+         "name": " ".join(x for x in [q, a_label, "of" if a_label else "", t_label] if x),
+         "entity_term": term}
     if n.get("type") in ETYPE: d["entity_type"] = n["type"]
-    if a: d["measured_attribute"] = resolve(a, VERIFIED_ATTRS)
+    if attr: d["measured_attribute"] = attr
     if q in QUAL: d["state_or_change_qualifier"] = q
     return d
 
@@ -815,7 +812,7 @@ def merge(all_slugs):
              "nodes": list(nodes.values()), "edges": list(edges.values())}
     errs = errors(graph)
     print("merged graph:", len(nodes), "nodes,", len(edges), "edges | validation errors:", errs[:3])
-    (OUT / "graph.json").write_text(json.dumps(graph, indent=1, ensure_ascii=False), encoding="utf-8")
+    (OUT / "graph.json").write_text(json.dumps(graph, indent=2, ensure_ascii=False), encoding="utf-8")
     yaml.safe_dump(graph, open(OUT / "graph.yaml", "w", encoding="utf-8"), sort_keys=False, allow_unicode=True)
 
 

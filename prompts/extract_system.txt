@@ -1,39 +1,20 @@
-You extract causal claims from sentences of an ecological restoration article.
+Extract causal claims from numbered sentences ("[12] text") of an ecological restoration article.
+Return ONLY minified one-line JSON: {"claims":[...]}. Refer to sentences by number; never copy text. Max 16 claims per batch; prefer the clearest statements and null results. If none, return {"claims":[]}.
 
-Input: numbered sentences, one per line, like "[12] text".
-Return ONLY JSON: {"claims":[...]}. Refer to sentences by number. Never copy sentence text.
-Output minified JSON on one line: no newlines, no indentation, no spaces after : or ,.
-Do not output "neg"; it is derived from "lang".
-Return at most 12 claims per batch, preferring the clearest causal statements and any null results.
+Claim: {"id":12,"cause":{"type":"","term":"","attr":"","q":""},"effect":{"type":"","term":"","attr":"","q":""},"pred":"causes","lang":"direct_causal","acc":["interventionist"]}
 
-Claim format:
-{"id":12,
- "cause":{"type":"...","term":"...","attr":"...","q":"..."},
- "effect":{"type":"...","term":"...","attr":"...","q":"..."},
- "pred":"causes","lang":"direct_causal","neg":false,"acc":["interventionist"]}
+Rules (must be followed):
+- One claim per sentence max: its main cause-effect statement. Only the authors' own results and conclusions; skip other studies' findings, hypotheses, methods, background, and pure correlations without causal wording.
+- Cause and effect terms must both appear in that sentence (not via a pronoun or a neighbouring sentence), and the effect state must be stated there. Reuse the sentence's own words in "term"; don't expand abbreviations. Never infer outcomes or turn explanations into effect nodes.
+- "attr": always give a PATO "CURIE | label" for measured properties on taxa and environmental variables (PATO:0000070 abundance, PATO:0000574 density, PATO:0000014 biomass...). Use free text only if no PATO term fits.
+- "term": give a CURIE for taxa (NCBITaxon) and for chemicals, processes and environments (CHEBI, GO, ENVO) only when you know the exact code; otherwise free text.
+- Applied treatments (planting, removal, burning, grazing, seeding, mowing) are management_intervention with q "introduced" ("removed" for removal). Put the treatment in "term" and the varied property in "attr". Never write "increased initial density" for a planted treatment.
+- Direction goes in "q". Suppression = pred "causes" with effect q "decreased".
+- lang = the AUTHORS' wording: direct_causal (unhedged: caused, reduced, suppressed, killed, resulted in); uncertain_causal (may, probably, likely, suggests, tended to); no_relationship (no effect/difference).
+- Null results ("not affected", "did not differ", "no significant difference", "no effect") are claims with lang no_relationship. Effect q is what a positive result would have been ("decreased" for harm/suppression/loss, else "increased"). Never use "unchanged" for nulls; it means a reported stable state.
+- Management recommendations are claims: cause = the action, effect = the intended outcome, acc agency, lang uncertain_causal if hedged.
+- acc (1-2): interventionist if the authors manipulated the cause; counterfactual if compared with a control/other levels; probabilistic for observational/statistical patterns; mechanistic if a mechanism is described; agency for recommendations.
 
-Rules:
-- The sentences were pre-selected because they probably report a result. Extract a claim from every sentence that states an effect, or no effect, of one thing on another. At most ONE claim per sentence: its main cause-effect statement.
-- The cause term and the effect term must both appear in that sentence (a pronoun or "this" does not count). Never take a cause from a neighbouring sentence. Skip the sentence otherwise.
-- The effect state must be stated or directly reported in the sentence. Never infer a direction or outcome the sentence does not give. Skip a sentence that does not report one.
-- Only the authors' own results and conclusions. Skip other studies' findings, hypotheses, methods and background.
-- A node is a state of an entity. "term" should be an ontology CURIE with label: "NCBITaxon:3472 | Sanguinaria canadensis". "attr" is the measured property CURIE with label: "PATO:0000070 | abundance", or "" if none. "q" is the change or state.
-- Applied treatments (planting, removal, burning, grazing, seeding, mowing) are type management_intervention with q "introduced" ("removed" for removal). Put the treatment in "term" ("planting of Sanguinaria canadensis") and the varied property in "attr" ("initial density"). Never write "increased initial density" for a planted treatment.
-- Direction goes in "q". A suppression is pred "causes" with effect q "decreased".
-- Use only things that were measured or manipulated. Never turn an explanation ("probably through competition") into an effect node.
-- lang is how the AUTHORS word the claim: direct_causal = unhedged causal verb (caused, reduced, suppressed, harmed, killed, resulted in); uncertain_causal = hedged (may, probably, likely, suggests, tended to, appears); no_relationship = no effect or no difference reported.
-- Null results are common and matter. "not affected", "did not differ", "no significant difference", "no additional benefit", "no effect" are claims: lang no_relationship AND neg true, always both. neg is true only with no_relationship. For a null result "q" is the state a positive result would have had ("decreased" if the sentence is about harm, suppression or loss; otherwise "increased"). Never use "unchanged" for null results — "unchanged" means a reported stable state, not a null finding.
-- Management recommendations ("planting X is a good strategy for managing Y") are claims: cause = the action, effect = the intended outcome, lang uncertain_causal if hedged, acc agency.
-- Skip pure correlations and associations that have no causal wording.
-- acc (1 to 2): interventionist if the authors manipulated the cause; add counterfactual if compared with a control or other levels; probabilistic for observational or statistical patterns; mechanistic if a mechanism is described; agency for management recommendations.
-- If nothing qualifies, return {"claims":[]}.
-
-
-Examples (invented):
-[3] Seedling emergence did not differ among shrub-removal plots.
-{"id":3,"cause":{"type":"management_intervention","term":"shrub removal","attr":"","q":"removed"},"effect":{"type":"taxon","term":"seedlings","attr":"emergence","q":"increased"},"pred":"causes","lang":"no_relationship","neg":true,"acc":["interventionist","counterfactual"]}
-[8] Annual mowing probably reduced thistle cover within two seasons.
-{"id":8,"cause":{"type":"management_intervention","term":"mowing","attr":"","q":"introduced"},"effect":{"type":"taxon","term":"thistle","attr":"cover","q":"decreased"},"pred":"causes","lang":"uncertain_causal","neg":false,"acc":["interventionist"]}
 
 Allowed values:
 type: environmental_variable, composite_variable, environmental_process, management_intervention, taxon
@@ -41,33 +22,11 @@ q: increased, decreased, present, absent, introduced, removed, unchanged, occurr
 pred: causes, contributes_to, enables
 lang: no_relationship, uncertain_causal, direct_causal
 acc: counterfactual, probabilistic, interventionist, mechanistic, agency
+Prefixes: NCBITaxon, PATO, ENVO, GO, CHEBI, ECO, PO, NCIT, AGROVOC, ecoskos.
+Verified codes: NCBITaxon:3472 Sanguinaria canadensis; NCBITaxon:126270 Alliaria petiolata; PATO:0000070 abundance; PATO:0000574 density; NCIT:C53338 plant performance; PO:0008037 seedling; PO:0000013 juvenile; ENVO:01001243 forest understory; GO:0010150 leaf development.
 
-## OUTPUT FORMAT: ONTOLOGY CURIES
-In your claim output, use "term" and "attr" fields with CURIE + label format:
-  "term": "NCBITaxon:3472 | Sanguinaria canadensis"
-  "attr": "PATO:0000070 | abundance"
-
-Format: "CURIE | human-readable label" (pipe required for CURIEs)
-- Use CURIE from the prefix map below
-- If uncertain, use free text only (no pipe)
-
-## PREFIX MAP (from schema/causalmosaic.yaml)
-ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_
-pato: http://purl.obolibrary.org/obo/PATO_
-envo: http://purl.obolibrary.org/obo/ENVO_
-go: http://purl.obolibrary.org/obo/GO_
-chebi: http://purl.obolibrary.org/obo/CHEBI_
-eco: http://purl.obolibrary.org/obo/ECO_
-po: http://purl.obolibrary.org/obo/PO_
-ncit: http://purl.obolibrary.org/obo/NCIT_
-agrovoc: http://aims.fao.org/aos/agrovoc/
-ecoskos: http://ecoskos.org/ecoskos#
-
-## VERIFIED EXAMPLES (from gold standard)
-Taxa: NCBITaxon:3472 | Sanguinaria canadensis, NCBITaxon:126270 | Alliaria petiolata
-Attributes: PATO:0000070 | abundance, PATO:0000574 | density, NCIT:C53338 | plant performance, NCIT:C25681 | density
-Life stages: PO:0008037 | seedling, PO:0000013 | juvenile
-Environments: ENVO:01001243 | forest understory
-Processes: GO:0010150 | leaf development
-Ecosystem groups: ecoskos:0000001 | herb, ecoskos:0000004 | tree
-Evidence: ECO:0000006 | randomized experiment, ECO:0000007 | observational study
+Examples:
+[3] Seedling emergence did not differ among shrub-removal plots.
+{"id":3,"cause":{"type":"management_intervention","term":"shrub removal","attr":"","q":"removed"},"effect":{"type":"taxon","term":"seedlings","attr":"emergence","q":"increased"},"pred":"causes","lang":"no_relationship","acc":["interventionist","counterfactual"]}
+[8] Annual mowing probably reduced thistle cover within two seasons.
+{"id":8,"cause":{"type":"management_intervention","term":"mowing","attr":"","q":"introduced"},"effect":{"type":"taxon","term":"thistle","attr":"cover","q":"decreased"},"pred":"causes","lang":"uncertain_causal","acc":["interventionist"]}
