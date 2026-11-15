@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from pipeline import CUES, SKIP_HEAD
+from pipeline_v1 import CUES, SKIP_HEAD
 from tools.evalutil import toks, sim
 
 LOST = [

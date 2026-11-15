@@ -1,5 +1,5 @@
 import yaml
-from pipeline import CUES
+from pipeline_v1 import CUES
 
 d = yaml.safe_load(open("example/Murphy2005.yaml", encoding="utf-8"))
 sents = [e["sentence"] for e in d["graphs"]]

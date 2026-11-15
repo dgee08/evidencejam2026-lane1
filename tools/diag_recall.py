@@ -1,6 +1,6 @@
 import re, yaml
 from pathlib import Path
-from pipeline import selected_sentences
+from pipeline_v1 import selected_sentences
 from tools.evalutil import best
 
 gold = [e["sentence"] for e in yaml.safe_load(open("example/Murphy2005.yaml", encoding="utf-8"))["graphs"]]

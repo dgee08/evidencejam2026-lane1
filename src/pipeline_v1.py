@@ -1,18 +1,17 @@
 import csv, hashlib, json, os, re, sys, threading, time, yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from openai import AsyncOpenAI
+from openai import OpenAI
 from linkml.validator import Validator
 from linkml.validator.plugins import JsonschemaValidationPlugin
-import asyncio
 
 SCHEMA = "schema/causalmosaic.yaml"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "output")
-WORKERS = int(os.environ.get("CAMO_WORKERS", "3"))       # Reduced from 10
-BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "180"))  # More time
+WORKERS = int(os.environ.get("CAMO_WORKERS", "10"))
+BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "90"))
 LIMIT = int(os.environ.get("CAMO_LIMIT", "0"))
 FORCE = os.environ.get("CAMO_FORCE") == "1"
-MAX_SENT = int(os.environ.get("CAMO_MAX_SENT", "300"))   # Larger batches = fewer API calls, better for flaky endpoint
+MAX_SENT = 120
 DEADLINE = time.time() + BUDGET_MIN * 60
 LOCK = threading.Lock()
 STATS = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "articles": 0, "claims": 0}
@@ -20,17 +19,11 @@ STATS = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "articles": 0, 
 schema = yaml.safe_load(open(SCHEMA, encoding="utf-8"))
 def enum(n): return set(schema["enums"][n]["permissible_values"])
 PRED = {"causes", "contributes_to", "enables"} & enum("CausalPredicateEnum")
-LANG = enum("ClaimStrengthEnum") - {"associational"}
+LANG = enum("ClaimStrengthEnum") - {"associational"}   # 'associational' fails validation in v0.10.0
 ACC, QUAL, ETYPE = enum("PhilosophicalAccountEnum"), enum("StateOrChangeQualifierEnum"), enum("EntityTypeEnum")
 VALIDATOR = Validator(SCHEMA, validation_plugins=[JsonschemaValidationPlugin(closed=True)])
 
-# Async client for concurrent batch requests within an article
-aclient = AsyncOpenAI(
-    base_url=os.environ["BRINE_URL"],
-    api_key=os.environ["BRINE_API_KEY"],
-    timeout=300,           # Match original timeout for slow endpoint
-    max_retries=0
-)
+client = OpenAI(base_url=os.environ["BRINE_URL"], api_key=os.environ["BRINE_API_KEY"], timeout=300, max_retries=0)
 MODEL = os.environ["BRINE_MODEL"]
 PROMPT = Path("prompts/extract_system.txt").read_text(encoding="utf-8")
 INDEX = {r["slug"]: r for r in csv.DictReader(open("corpus/index.csv", encoding="utf-8"))}
@@ -38,7 +31,7 @@ INDEX = {r["slug"]: r for r in csv.DictReader(open("corpus/index.csv", encoding=
 SKIP_HEAD = re.compile(r"^(introduction|background|methods?|materials|study (site|area|system|species)|experimental|references?|literature cited|acknowledg|appendix|supplement)", re.I)
 CUES = re.compile(r"\b(affect|effect|increas|decreas|reduc|suppress|promot|enhanc|inhibit|limit|caus|result(ed|s)? in|lead|led|due to|because|driv|respond|response|declin|improv|benefit|facilitat|prevent|depress|greater|higher|lower|fewer|significan|effective|strateg|suggest|mitigat|rose\b|rise|indicat|harm|kill|no (significant )?(difference|change|effect))|P\s*[<=>]", re.I)
 
-# --- Ontology lookup tables (same as original) ---
+# --- Ontology lookup tables ---
 TAXON_CURIES = {
     "alliaria petiolata": "NCBITaxon:126270",
     "sanguinaria canadensis": "NCBITaxon:3472",
@@ -58,9 +51,9 @@ TAXON_CURIES = {
     "seedling": "NCBITaxon:34740",
     "rosette": "NCBITaxon:34740",
     "ramet": "NCBITaxon:34740",
-    " alliaria": "NCBITaxon:126270",
-    " s. canadensis": "NCBITaxon:3472",
-    " a. petiolata": "NCBITaxon:126270",
+    " Alliaria": "NCBITaxon:126270",
+    " S. canadensis": "NCBITaxon:3472",
+    " A. petiolata": "NCBITaxon:126270",
 }
 
 ATTR_CURIES = {
@@ -96,9 +89,9 @@ ATTR_CURIES = {
     "bulk density": "PATO:0000574",
     "carbon": "CHEBI:27594",
     "methane": "CHEBI:16183",
-    "co2": "CHEBI:16526",
-    "ch4": "CHEBI:16183",
-    "ghg": "CHEBI:27594",
+    "CO2": "CHEBI:16526",
+    "CH4": "CHEBI:16183",
+    "GHG": "CHEBI:27594",
     "respiration": "GO:0006099",
     "photosynthesis": "GO:0015979",
     "water table": "ENVO:01000253",
@@ -181,23 +174,27 @@ EVIDENCE_CURIES = {
 }
 
 def enrich_node(n, sent):
+    """Add ontology CURIEs and missing fields to a node."""
     term_lower = (n.get("entity_term") or "").lower().strip()
     attr_lower = (n.get("measured_attribute") or "").lower().strip()
     q = n.get("state_or_change_qualifier", "")
     etype = n.get("entity_type", "")
 
+    # Taxon CURIE
     if etype == "taxon":
         for k, v in TAXON_CURIES.items():
             if k in term_lower:
                 n["entity_term"] = v
                 break
 
+    # Measured attribute CURIE
     if attr_lower:
         for k, v in ATTR_CURIES.items():
             if k in attr_lower:
                 n["measured_attribute"] = v
                 break
 
+    # Life stage from term/attribute/sentence
     if etype in ("taxon", "management_intervention"):
         sent_lower = sent.lower()
         for k, (enum_val, curie) in LIFE_STAGE_CURIES.items():
@@ -206,7 +203,9 @@ def enrich_node(n, sent):
                 n["life_stage_term"] = curie
                 break
 
+    # Applied_to for management interventions
     if etype == "management_intervention":
+        # Find taxon mentioned in sentence
         for taxon_name, curie in TAXON_CURIES.items():
             if taxon_name in sent.lower():
                 n.setdefault("applied_to", []).append({
@@ -215,10 +214,12 @@ def enrich_node(n, sent):
                 })
                 break
 
+    # Fix entity_type for interventions incorrectly labeled as taxon
     if etype == "taxon" and q in ("introduced", "removed"):
         n["entity_type"] = "management_intervention"
         n["state_or_change_qualifier"] = q
 
+    # Environment CURIE for environmental_variable/process
     if etype in ("environmental_variable", "environmental_process"):
         for k, v in ENV_CURIES.items():
             if k in term_lower or k in attr_lower:
@@ -229,48 +230,61 @@ def enrich_node(n, sent):
 
 
 def enrich_edge(e, sents, slug):
+    """Add rich CAMO fields to an edge."""
     sent = e.get("original_sentence", "")
     sent_lower = sent.lower()
     lang = e.get("causal_language", "")
 
+    # Dose parsing
     dose = parse_dose(sent, s_node_id=e["subject"])
     if dose:
         e["dose"] = dose
 
+    # Comparator parsing
     comparator = parse_comparator(sent)
     if comparator:
         e["comparator"] = comparator
 
+    # Temporal extent
     temporal = parse_temporal(sent, slug)
     if temporal:
         e["temporal_extent"] = temporal
 
+    # Strength / significance
     strength = parse_strength(sent, lang)
     if strength:
         e["strength"] = strength
 
+    # Certainty grade
     e["certainty_grade"] = infer_certainty_grade(lang, strength.get("significance") if strength else None)
 
+    # Evidential basis
     e["evidential_basis"] = infer_evidential_basis(sent, lang)
 
+    # Direction
     direction = infer_direction(sent, lang)
     if direction:
         e["direction"] = direction
 
+    # Context dependence
     context = infer_context(sent, slug)
     if context:
         e["context_dependence"] = context
 
+    # Scope
     e["scope"] = infer_scope(lang, sent)
 
+    # Ecosystem context
     ecosystem = infer_ecosystem(sent)
     if ecosystem:
         e["ecosystem_context"] = ecosystem
 
+    # Mediation / moderation (basic)
     mediation = infer_mediation(sent)
     if mediation:
         e["mediation"] = mediation
 
+    # Proximate/distal
     prox = infer_proximate_distal(sent, lang)
     if prox:
         e["proximate_distal"] = prox
@@ -278,7 +292,7 @@ def enrich_edge(e, sents, slug):
     return e
 
 
-# --- Parsers (same as original) ---
+# --- Parsers ---
 DOSE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(ramets?/m2|ramets?/m²|individuals?/m2|individuals?/m²|seedlings?/m2|seedlings?/m²|g/m2|g/m²|kg/ha|mg/L|µg/L|ppm|ppb|%)", re.I)
 DOSE_SINGLE_RE = re.compile(r"(?:at|of|densities? of|density of)\s+(\d+(?:\.\d+)?)\s*(ramets?/m2|ramets?/m²|individuals?/m2|individuals?/m²|seedlings?/m2|seedlings?/m²)", re.I)
 DOSE_VERBATIM_RE = re.compile(r"(?:as little as|densities? of|density of)\s+([\d\s,.-]+(?:ramets?/m2|ramets?/m²|seedlings?/m2|seedlings?/m²|individuals?/m2|individuals?/m²))", re.I)
@@ -301,6 +315,7 @@ def parse_dose(sent, s_node_id):
     return None
 
 def guess_counted_entity(sent, s_node_id):
+    """Heuristic: use the subject node's taxon if mentioned."""
     sent_lower = sent.lower()
     for taxon, curie in TAXON_CURIES.items():
         if taxon in sent_lower:
@@ -316,6 +331,7 @@ def parse_comparator(sent):
     if m:
         desc = m.group(1).strip()
         comp = {"status": "explicitly_asserted", "comparator_type": "alternative_dose_level", "comparator_description": desc}
+        # Try to extract comparator dose
         dose_match = DOSE_RE.search(desc) or DOSE_SINGLE_RE.search(desc)
         if dose_match:
             if dose_match.lastindex >= 2:
@@ -337,6 +353,7 @@ def parse_temporal(sent, slug):
     m = TEMPORAL_RE.search(sent)
     if m:
         year = int(m.group(1))
+        # Assume transplant year from slug or default 1997 for Murphy
         transplant_year = 1997 if "YKQQ" in slug else year - 3
         temp["time_since_intervention_months"] = (year - transplant_year) * 12
         temp["time_since_intervention_text"] = m.group(0)
@@ -367,6 +384,7 @@ def parse_strength(sent, lang):
     m = METHOD_RE.search(sent)
     if m:
         method = m.group(1).replace("-", "_").replace(".", "_").replace(" ", "_")
+        # Map to valid AnalysisMethodEnum values
         method_map = {
             "linear_regression": "regression",
             "multiple_regression": "regression",
@@ -447,12 +465,18 @@ def infer_context(sent, slug):
     return None
 
 def infer_scope(lang, sent):
-    if lang in ("direct_causal", "uncertain_causal", "no_relationship"):
+    if lang == "direct_causal":
+        return "assertional"
+    elif lang == "uncertain_causal":
+        return "assertional"
+    elif lang == "no_relationship":
         return "assertional"
     return "assertional"
 
 def infer_ecosystem(sent):
+    """Map sentence text to valid EcosystemFunctionalGroupEnum values."""
     sent_lower = sent.lower()
+    # IUCN GET / ELMO ecosystem functional groups (per schema enum)
     if "boreal" in sent_lower:
         return "boreal_and_temperate_high_montane_forests_and_woodlands"
     if "temperate" in sent_lower and ("forest" in sent_lower or "woodlot" in sent_lower):
@@ -474,7 +498,7 @@ def infer_mediation(sent):
     return None
 
 def infer_proximate_distal(sent, lang):
-    sent_lower = sent.lower()
+    sent_lower = sent_lower = sent.lower()
     if "proximate" in sent_lower or "direct" in sent_lower:
         return "proximate"
     if "distal" in sent_lower or "indirect" in sent_lower or "long-term" in sent_lower:
@@ -485,62 +509,28 @@ def errors(g): return [r.message for r in VALIDATOR.validate(g, "CausalGraph").r
 def h(*parts): return hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
 def clean(s): return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", s).replace("*", "")).strip()
 
-# Whitelist: claim-dense sections + methods/experiment/analysis (often contain causal claims)
-# Expanded for completeness in ecological restoration causal claims
-TARGET_SECTIONS = {
-    # Core claim-dense sections (IMRaD)
-    "abstract", "results", "discussion", "conclusions", "findings", "summary",
-    # Experimental/analytical sections
-    "experiment", "analysis", "observations", "effects", "impacts", "responses",
-    # Methods variants (causal claims often in design/treatment descriptions)
-    "methods", "methodology", "materials", "treatments", "treatment",
-    "experimental design", "study design", "design",
-    # Intervention/restoration specific
-    "intervention", "interventions", "restoration", "management",
-    # Monitoring/evaluation
-    "monitoring", "assessment", "evaluation", "follow-up",
-    # Site/system/species context
-    "site", "study site", "study area", "system", "study system", "species",
-    # Setting variants
-    "field", "greenhouse", "laboratory", "mesocosm",
-    # Discussion subsections that often contain causal synthesis
-    "synthesis", "implications", "management implications",
-}
-
-def normalize_header(h):
-    """Normalize spaced PDF headers: 'a b s t r a c t' -> 'abstract'"""
-    return re.sub(r"\s+", "", h.lower())
-
 def split_sentences(body):
     body = re.sub(r"(?<![.!?:\"')\]])\n\s*\n(?=[a-z])", " ", body)
     out = []
     for para in re.split(r"\n\s*\n", body):
         if para.count("|") > 4:
-            continue
+            continue                      # table rows
         for s in re.split(r"(?<=[.!?])\s+(?=[A-Z])", para.replace("\n", " ")):
             if 40 <= len(s) <= 600 and CUES.search(s):
                 out.append(s.strip())
     return out
 
 def selected_sentences(text):
-    """Extract sentences ONLY from whitelisted sections (including subsections)."""
-    keep, buf = False, []
-    current_major = ""
+    keep, buf, has_head = True, [], False
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
-            h = normalize_header(re.sub(r"^[#\s\d.*]+", "", line))
-            # Track major sections (1-2 #)
-            hash_count = len(line) - len(line.lstrip("#"))
-            if hash_count <= 2:
-                current_major = h
-            # Keep if THIS header matches OR parent major section matches
-            keep = any(t in h for t in TARGET_SECTIONS) or any(t in current_major for t in TARGET_SECTIONS)
+            has_head = True
+            keep = not SKIP_HEAD.match(re.sub(r"^[#\s\d.*]+", "", line))
             continue
         if keep:
             buf.append(line)
-    sents = split_sentences("\n".join(buf))
-    # Fallback: if whitelist yields too few, use CUES filter on full text
-    return sents if len(sents) >= 3 else split_sentences(text)
+    sents = split_sentences("\n".join(buf)) if has_head else []
+    return sents if len(sents) >= 3 else split_sentences(text)   # fall back if headings are unreliable
 
 def parse_claims(txt):
     start = txt.find("{")
@@ -552,6 +542,7 @@ def parse_claims(txt):
         return d.get("claims", []) if isinstance(d, dict) else None
     except json.JSONDecodeError:
         pass
+    # truncated reply: keep every complete claim before the cut
     for m in reversed(list(re.finditer(r"\}\s*,", s))):
         try:
             d = json.loads(s[: m.start() + 1] + "]}")
@@ -560,20 +551,20 @@ def parse_claims(txt):
             continue
     return None
 
-async def ask_async(numbered):
-    """Async version matching original pipeline settings."""
+def ask(numbered):
+    r = None
     for attempt in range(4):
         try:
-            r = await aclient.chat.completions.create(
+            r = client.chat.completions.create(
                 model=MODEL, temperature=0, max_tokens=8192,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": numbered}])
             break
         except Exception as e:
-            print(f"  request failed: {type(e).__name__} attempt {attempt + 1}", flush=True)
-            await asyncio.sleep(2 * (2 ** attempt))  # Faster backoff: 2, 4, 8, 16s
-    else:
+            print("  request failed:", type(e).__name__, "attempt", attempt + 1, flush=True)
+            time.sleep(5 * (2 ** attempt))  # exponential backoff: 5, 10, 20, 40s
+    if r is None:
         return None
-
     choice = r.choices[0]
     with LOCK:
         STATS["calls"] += 1
@@ -582,79 +573,19 @@ async def ask_async(numbered):
             STATS["completion_tokens"] += r.usage.completion_tokens
         if choice.finish_reason == "length":
             STATS["truncated"] = STATS.get("truncated", 0) + 1
-
-    txt = re.sub(r"\(think\).*?\(/think\)", "", choice.message.content or "", flags=re.S)
-    txt = re.sub(r"[\[\(]think[\]\)].*?[\[\(]/think[\]\)]", "", txt, flags=re.S)
+    txt = re.sub(r"<think>.*?</think>", "", choice.message.content or "", flags=re.S)
     claims = parse_claims(txt)
     if claims is None:
         print(f"  reply was not valid JSON (finish={choice.finish_reason})", flush=True)
     return claims
 
-async def process_article_async(path):
-    """Process all batches for one article concurrently."""
-    path = Path(path); slug = path.stem
-    cache = OUT / "articles" / f"{slug}.json"
-    if cache.exists():
-        return slug, {"cached": True}
-    if time.time() > DEADLINE:
-        return slug, {"skipped": "time budget"}
-
-    sents = selected_sentences(path.read_text(encoding="utf-8"))
-    log = {"sentences_sent": len(sents), "kept": 0, "dropped": {}, "invalid": []}
-
-    # Create all batch tasks
-    batch_tasks = []
-    for start in range(0, len(sents), MAX_SENT):
-        end = min(start + MAX_SENT, len(sents))
-        batch = "\n".join(f"[{i}] {clean(sents[i])}" for i in range(start, end))
-        batch_tasks.append(ask_async(batch))
-
-    # Execute all batches concurrently
-    results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-    claims, seen, failed = [], set(), False
-    for res in results:
-        if isinstance(res, Exception) or res is None:
-            failed = True
-            continue
-        for c in res:
-            try:
-                reason = check(c, sents)
-                if reason is None and c["id"] in seen:
-                    reason = "duplicate_sentence"
-            except (AttributeError, TypeError, KeyError):
-                reason = "malformed"
-            if reason:
-                log["dropped"][reason] = log["dropped"].get(reason, 0) + 1
-                continue
-            seen.add(c["id"]); claims.append(c)
-
-    if failed:
-        return slug, {"failed": True}
-
-    graph = assemble(slug, sents, claims)
-    if claims and errors(graph):
-        good = []
-        for c in claims:
-            errs = errors(assemble(slug, sents, [c]))
-            if errs:
-                log["invalid"].append({"sentence": sents[c["id"]][:200], "errors": errs[:2]})
-            else:
-                good.append(c)
-        claims, graph = good, assemble(slug, sents, good)
-
-    log["kept"] = len(claims)
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(graph, ensure_ascii=False), encoding="utf-8")
-    (OUT / "articles" / f"{slug}.log.json").write_text(json.dumps(log, indent=1, ensure_ascii=False), encoding="utf-8")
-
-    with LOCK:
-        STATS["articles"] += 1
-        STATS["claims"] += len(claims)
-    return slug, log
-
+def in_sentence(term, sent):
+    low = sent.lower()
+    stems = [w[:5] for w in re.findall(r"[a-z]+", term.lower()) if len(w) >= 4]
+    return any(s in low for s in stems)
 
 def check(c, sents):
+    """None if the claim is usable, else the reason it is dropped."""
     if not (isinstance(c.get("id"), int) and 0 <= c["id"] < len(sents)): return "bad_id"
     if c.get("pred") not in PRED or c.get("lang") not in LANG: return "bad_enum"
     if bool(c.get("neg")) != (c["lang"] == "no_relationship"): return "bad_null_pairing"
@@ -663,11 +594,6 @@ def check(c, sents):
         term = c[side].get("term") or ""
         if not term or not in_sentence(term, sents[c["id"]]): return side + "_not_in_sentence"
     return None
-
-def in_sentence(term, sent):
-    low = sent.lower()
-    stems = [w[:5] for w in re.findall(r"[a-z]+", term.lower()) if len(w) >= 4]
-    return any(s in low for s in stems)
 
 def node(slug, n):
     q, a, t = (n.get("q") or ""), (n.get("attr") or ""), n["term"].strip()
@@ -693,6 +619,7 @@ def build(slug, sents, c):
             "source_document": slug}
     if c["lang"] == "no_relationship":
         edge["negated"] = True
+    # Enrich node and edge with ontology CURIEs and CAMO fields
     s = enrich_node(s, sent)
     o = enrich_node(o, sent)
     edge = enrich_edge(edge, sents, slug)
@@ -715,11 +642,54 @@ def assemble(slug, sents, claims):
             "source_documents": [source_doc(slug)],
             "nodes": list(nodes.values()), "edges": list(edges.values())}
 
-
 def process(path):
-    """Sync wrapper for async article processing."""
-    return asyncio.run(process_article_async(path))
-
+    path = Path(path); slug = path.stem
+    cache = OUT / "articles" / f"{slug}.json"
+    if cache.exists():
+        return slug, {"cached": True}
+    if time.time() > DEADLINE:
+        return slug, {"skipped": "time budget"}
+    sents = selected_sentences(path.read_text(encoding="utf-8"))
+    log = {"sentences_sent": len(sents), "kept": 0, "dropped": {}, "invalid": []}
+    claims, seen, failed = [], set(), False
+    for start in range(0, len(sents), MAX_SENT):
+        end = min(start + MAX_SENT, len(sents))
+        batch = "\n".join(f"[{i}] {clean(sents[i])}" for i in range(start, end))
+        res = ask(batch)
+        if res is None:
+            failed = True
+            continue
+        for c in res:
+            try:
+                reason = check(c, sents)
+                if reason is None and c["id"] in seen:
+                    reason = "duplicate_sentence"
+            except (AttributeError, TypeError, KeyError):
+                reason = "malformed"
+            if reason:
+                log["dropped"][reason] = log["dropped"].get(reason, 0) + 1
+                continue
+            seen.add(c["id"]); claims.append(c)
+    if failed:
+        return slug, {"failed": True}          # not cached, so it is retried
+    graph = assemble(slug, sents, claims)
+    if claims and errors(graph):
+        good = []
+        for c in claims:
+            errs = errors(assemble(slug, sents, [c]))
+            if errs:
+                log["invalid"].append({"sentence": sents[c["id"]][:200], "errors": errs[:2]})
+            else:
+                good.append(c)
+        claims, graph = good, assemble(slug, sents, good)
+    log["kept"] = len(claims)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(graph, ensure_ascii=False), encoding="utf-8")
+    (OUT / "articles" / f"{slug}.log.json").write_text(json.dumps(log, indent=1, ensure_ascii=False), encoding="utf-8")
+    with LOCK:
+        STATS["articles"] += 1
+        STATS["claims"] += len(claims)
+    return slug, log
 
 def merge(all_slugs):
     nodes, edges = {}, {}
@@ -736,7 +706,6 @@ def merge(all_slugs):
     print("merged graph:", len(nodes), "nodes,", len(edges), "edges | validation errors:", errs[:3])
     (OUT / "graph.json").write_text(json.dumps(graph, indent=1, ensure_ascii=False), encoding="utf-8")
     yaml.safe_dump(graph, open(OUT / "graph.yaml", "w", encoding="utf-8"), sort_keys=False, allow_unicode=True)
-
 
 def main(corpus):
     t0 = time.time()
@@ -763,11 +732,10 @@ def main(corpus):
     (OUT / "run_stats.json").write_text(json.dumps(STATS, indent=1), encoding="utf-8")
     print(STATS)
 
-
 if __name__ == "__main__":
     target = Path(sys.argv[1])
     if target.is_file():
         (OUT / "articles" / f"{target.stem}.json").unlink(missing_ok=True)
-        print(asyncio.run(process_article_async(target)))
+        print(process(target))
     else:
         main(target)
