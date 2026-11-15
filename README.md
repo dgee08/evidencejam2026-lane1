@@ -118,9 +118,11 @@ Faithfulness means the graph says only what the articles say. The pipeline treat
 - **Null results are paired correctly.** `negated: true` must agree with `causal_language: no_relationship`, otherwise the claim is dropped (`bad_null_pairing`).
 - **Terms must appear in the sentence.** The cause and effect terms must share a word stem with the sentence they cite. Otherwise the claim is dropped (`cause_not_in_sentence` / `effect_not_in_sentence`).
 - **Schema validity is enforced.** Output that fails LinkML validation is removed claim by claim.
+
 **What happens to a rejected claim**
 - It is dropped and counted in the article's log (`output/articles/<slug>.log.json`).
 - It does not reach the graph.
+
 ---
  
 ### Value to a real user
@@ -135,6 +137,7 @@ Faithfulness means the graph says only what the articles say. The pipeline treat
 - **Ontology CURIEs.** Some terms are free text, and some mapping tables are coarse (see [Honest limits](#honest-limits)).
 - **Stage-5 fields.** Dose, comparator, certainty grade and evidential basis are heuristic.
 - **Recall.** Only sentences that pass the cue filter are read, and only `causes` / `contributes_to` / `enables` predicates are produced. The absence of an edge does not mean the paper makes no such claim.
+
 ---
  
 ### Honest limits
@@ -178,36 +181,24 @@ These are real failures we found in the pipeline.
 10. **Not tested on the whole corpus.**
     - **What happens:** We ran the pipeline on a few articles, not all 308.
     - **Effect:** We have not measured the total run time or the energy used per article. Also, the pipeline skips any article that already has a saved result in `output/articles/`, so old results made with earlier instructions can be reused unless `CAMO_FORCE=1` is set.
+
 ---
  
-### Craft and reusability
- 
-#### Install
- 
-```bash
-git clone <repo-url> && cd <repo>
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # pinned versions
-```
- 
-#### Configuration
- 
-**Required** (set these before running):
- 
-```bash
-export BRINE_URL="..."       # LLM endpoint URL
-export BRINE_MODEL="..."     # model name
-export BRINE_API_KEY="..."   # your API key
-```
- 
-**Optional** `CAMO_*` settings:
- 
-| Variable | Default | Meaning |
-| -------- | ------- | ------- |
-| `CAMO_WORKERS` | `3` | Articles processed in parallel |
-| `CAMO_MAX_SENT` | `300` | Sentences per LLM request. Lower it if replies are being truncated. |
-| `CAMO_BUDGET_MIN` | `180` | Time budget in minutes. After it, remaining articles are skipped. |
-| `CAMO_LIMIT` | `0` (all) | Only process the first N articles, useful for a quick test |
-| `CAMO_FORCE` | unset | Set to `1` to ignore cached per-article results in `output/articles/` |
- 
----
+## Building on this work (reusability)
+
+If you pick this project up, these are the extensions we think would help most, roughly in order of value. Each one points at the place in the code to start.
+
+| Idea | Where to start | Why it matters |
+| ---- | -------------- | -------------- |
+| **Check ontology codes against real ontology files.** Bundle small PATO, GO, ChEBI, ENVO and NCBITaxon term lists, and keep a model-supplied CURIE only if its code and label match. | `node()` in `pipeline.py` | Today we cannot tell a right code from a wrong one, and the lookup tables are coarse (see Honest limits 6 and 9). |
+| **Build a small gold set and score against it.** Hand-annotate a few articles, starting from `example/Murphy2005.yaml`, and measure edge precision and recall. | new script in `src/` | Every prompt and batch-size change so far was judged by eye on one or two articles. |
+| **Look at the rejected claims.** Log the claim and sentence for every drop, then loosen or replace the stem check. | `check()`, `in_sentence()` | Up to about half of the model's claims were dropped on one article, and we never read them. |
+| **Allow weaker relationships.** Add `associated_with` and `associational` to the allowed values and tell the model when to use them. | `PRED`, `LANG`, `prompts/extract_system.txt` | Fixes overstated causal labels (Honest limit 4). |
+| **Keep good batches when one fails.** Retry only the failed batch. | `process_article_async()` | Saves tokens and avoids losing whole articles. |
+| **Merge nodes across articles.** Match nodes by CURIE or normalized label, and record which articles each node comes from. | `merge()` | Lets the graph show the same concept supported by several papers. |
+| **Make the enrichment step trustworthy.** Replace invented defaults with "leave the field out", test each parser on a few articles, then enable it. | `enrich_node()`, `enrich_edge()`, the `parse_*` and `infer_*` helpers | These fields are the richest part of the schema, but they are currently off. |
+| **Improve sentence selection.** Compare the whitelist version (`pipeline.py`) with the blacklist version (`pipeline_original.py`), and test the `CUES` list. | `selected_sentences()`, `CUES` | The pipeline only reads sentences that pass this filter, so it limits recall. |
+| **Cut tokens further.** Two-pass design (a cheap filter, then extraction), or shorter prompts. | `prompts/extract_system.txt`, `ask_async()` | Prompt tokens were about 85% of our usage. |
+| **Clean the source text.** Strip `<sup>` tags and link fragments from spans. | `clean()`, `build()` | Spans are currently noisy to read. |
+
+Tips: set `CAMO_LIMIT` and `CAMO_FORCE=1` while experimenting, and read `output/articles/<slug>.log.json` after each run.
