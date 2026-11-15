@@ -60,7 +60,19 @@ Using the prompt from `extract_system.txt`, `pipeline.py` runs for each article:
 
 ### How pipeline.py works
 
-Description of how pipeline.py works
+`pipeline.py` first finds sentences that match the causal keyword filter (`CUES`) and sit under the whitelisted headings. If there are less than 3 sentences found, then the code will drop the whitelisted headings and search for `CUES` matches in the full text.
+
+The next step is to number the sentences and send them in batches of `CAMO_MAX_SENT` to an LLM following the prompt in `prompts/extract_system.txt`. Batches from one article run concurrently, while articles run in a thread pool. 
+
+Each claim returned by the LLM must have a valid sentence id, predicate, causal language, philosophical account, negation consistent with `no_relationship`, and cause and effect terms that appear in the sentence. Claims that fail to meet any of these conditions are dropped and tallied in the article log. 
+
+Each claim that passes becomes two nodes (subject and object node) and one edge, each with a deterministic hashed ID. 
+
+Next, rule-based parsers add extra fields by matching patterns in the claim's source sentence. Edges get `dose`, `comparator`, `temporal_extent`, `strength`, `certainty_grade`, `evidential_basis`, `direction`, `context_dependence`, `scope`, `ecosystem_context`, `mediation` and `proximate_distal`. Nodes get `life_stage`, `life_stage_term` and `applied_to`. The LLM can return ontology terms as `CURIE | label`. The pipeline parses these and stores the CURIE in `entity_term` or `measured_attribute`. If a value has no valid CURIE, it is kept as free text. 
+
+Next, each article graph is validated against the LinkML schema. If validation fails, each claim is re-validated on its own, and the ones that fail are dropped and logged under `invalid`. 
+
+Finally, the article graphs are merged into one graph and validated again.
 
 ## How merge_graphs.py works
 
