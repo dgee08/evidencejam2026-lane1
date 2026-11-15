@@ -1,4 +1,4 @@
-# Evidence Jam 2026: Lane 1 - Team d
+# Evidence Jam 2026: Lane 1 - Team D
 
 ## Our Solution
 
