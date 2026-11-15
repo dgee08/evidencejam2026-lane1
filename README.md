@@ -1,11 +1,52 @@
 ## Our Solution
 
-Our solution is a two-stage pipeline: extract causal claims from each article, then merge them into one graph.
+Our solution is a two-stage pipeline: extract causal claims from each article, then merge them into one graph. For background on this project, see [BACKGROUND.md](BACKGROUND.md).
 
 ![Extraction pipeline diagram](assets/extraction_pipeline.png)
 
 1. **Extract:** For each article, `pipeline.py` pulls out the relevant sentences, sends them to the LLM with the prompt in `prompts/extract_system.txt`, maps the results into the CAMO schema, and writes `[ARTICLE CODE].json`.
 2. **Merge:** Once every article has been processed, `merge_graphs.py` combines all the JSON files into a single causal graph in both JSON and YAML.
+
+---
+
+## Running the Program
+
+`run.sh` is the single entry point for the Lane 1 pipeline.
+
+```bash
+./run.sh [corpus_dir] [output_dir]
+```
+
+Both arguments are optional and default to `corpus` and `output`.
+
+### Prerequisites
+
+Before doing anything, `run.sh` checks that the LLM endpoint, model name, and API key are set. It exits with an error naming any that are missing.
+
+```bash
+export BRINE_URL="..."       # LLM endpoint URL
+export BRINE_MODEL="..."     # model name
+export BRINE_API_KEY="..."   # your API key
+```
+
+
+### What it does
+
+1. **Extract.** Reads each article in the corpus folder and builds a cause-and-effect graph for it.
+2. **Merge.** Combines all the article graphs into one merged graph, removing duplicate nodes along the way.
+3. **Validate.** Checks the merged graph against the Causal Mosaic schema and prints either `VALIDATION PASSED` or a list of what needs fixing.
+
+If any step fails, the script stops so you don't end up with partial results.
+
+### Output
+
+| Path | Contents |
+| ---- | -------- |
+| `output/merged_causal_graph.yaml` | Final merged graph (YAML) |
+| `output/merged_causal_graph.json` | Final merged graph (JSON) |
+| `output/articles/` | Individual article graphs |
+
+> **Note:** The merge and validation steps always read from `output/`. If you pass a different output directory, the later steps won't find the files, so keep the same folder throughout.
 
 ---
 
@@ -60,47 +101,6 @@ Our solution is a two-stage pipeline: extract causal claims from each article, t
 
 ---
 
-## Running the Program
-
-`run.sh` is the single entry point for the Lane 1 pipeline.
-
-```bash
-./run.sh [corpus_dir] [output_dir]
-```
-
-Both arguments are optional and default to `corpus` and `output`.
-
-### Prerequisites
-
-Before doing anything, `run.sh` checks that the LLM endpoint, model name, and API key are set. It exits with an error naming any that are missing.
-
-```bash
-export BRINE_URL="..."       # LLM endpoint URL
-export BRINE_MODEL="..."     # model name
-export BRINE_API_KEY="..."   # your API key
-```
-
-
-### What it does
-
-1. **Extract.** Reads each article in the corpus folder and builds a cause-and-effect graph for it.
-2. **Merge.** Combines all the article graphs into one merged graph, removing duplicate nodes along the way.
-3. **Validate.** Checks the merged graph against the Causal Mosaic schema and prints either `VALIDATION PASSED` or a list of what needs fixing.
-
-If any step fails, the script stops so you don't end up with partial results.
-
-### Output
-
-| Path | Contents |
-| ---- | -------- |
-| `output/merged_causal_graph.yaml` | Final merged graph (YAML) |
-| `output/merged_causal_graph.json` | Final merged graph (JSON) |
-| `output/articles/` | Individual article graphs |
-
-> **Note:** The merge and validation steps always read from `output/`. If you pass a different output directory, the later steps won't find the files, so keep the same folder throughout.
-
----
-
 ## Judging Criteria
  
 The sections below cover faithfulness, value to a real user, honest limits, and how to install and extend the pipeline.
@@ -135,7 +135,6 @@ Faithfulness means the graph says only what the articles say. The pipeline treat
 **What they must check**
 - **Labels.** Whether the cause and effect labels truly match the sentence. Open `original_sentence` for any edge they will rely on.
 - **Ontology CURIEs.** Some terms are free text, and some mapping tables are coarse (see [Honest limits](#honest-limits)).
-- **Stage-5 fields.** Dose, comparator, certainty grade and evidential basis are heuristic.
 - **Recall.** Only sentences that pass the cue filter are read, and only `causes` / `contributes_to` / `enables` predicates are produced. The absence of an edge does not mean the paper makes no such claim.
 
 ---
