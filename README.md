@@ -1,11 +1,13 @@
 ## Our Solution
 
-Our solution is a two-stage pipeline: extract causal claims from each article, then merge them into one graph. For background on this project, see [BACKGROUND.md](BACKGROUND.md).
+Our solution is a two-stage pipeline: extract causal claims from each article, then merge them into one graph.
 
 ![Extraction pipeline diagram](assets/extraction_pipeline.png)
 
 1. **Extract:** For each article, `pipeline.py` pulls out the relevant sentences, sends them to the LLM with the prompt in `prompts/extract_system.txt`, maps the results into the CAMO schema, and writes `[ARTICLE CODE].json`.
 2. **Merge:** Once every article has been processed, `merge_graphs.py` combines all the JSON files into a single causal graph in both JSON and YAML.
+
+For background information on this project, see [BACKGROUND.md](BACKGROUND.md).
 
 ---
 
