@@ -1,3 +1,5 @@
+# Evidence Jam 2026: Lane 1 - Team d
+
 ## Our Solution
 
 Our solution is a two-stage pipeline: extract causal claims from each article, then merge them into one graph.
