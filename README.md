@@ -1,4 +1,4 @@
-# Evidence Jam 2026 — Lane 1: Causal Annotation
+# Evidence Jam 2026 — Team d (Lane 1: Causal Annotation) 
 
 ## The challenge
 
@@ -15,6 +15,7 @@ Points will be awarded based on the quality of the annotations.
 
 ## What's in this repo
 
+**NEEDS UPDATING**
 ```
 corpus/              308 ecological restoration articles, one markdown file each
 corpus/index.csv     slug, DOI, title, authors, year, journal, word count
@@ -41,7 +42,7 @@ populations of taxa, environmental variables, composite variables, management
 interventions and environmental processes. The header comments and
 the `description` on every class, slot, and enum are the annotation guide.
 
-There's an annotation essentials guide here: https://tim-a.ca/causalmosaic/camo_annotation_essentials.html
+An annotation essentials guide can be found at **[this link](https://tim-a.ca/causalmosaic/camo_annotation_essentials.html)**. 
 
 ## How a CAMO graph works
 

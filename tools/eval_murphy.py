@@ -1,5 +1,5 @@
 import json, yaml
-from evalutil import toks, sim
+from tools.evalutil import toks, sim
 
 gold = [e["sentence"] for e in yaml.safe_load(open("example/Murphy2005.yaml", encoding="utf-8"))["graphs"]]
 g = json.load(open("output/articles/YKQQZV93.json", encoding="utf-8"))
