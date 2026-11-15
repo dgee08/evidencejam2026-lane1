@@ -54,7 +54,7 @@ An annotation essentials guide can be found at [this link](https://tim-a.ca/caus
 
 Our solution to Lane 1 involves a simple data extraction pipeline, shown below.
 
-![Extraction pipeline diagram](assets\extraction_pipeline.png)
+![Extraction pipeline diagram](assets/extraction_pipeline.png)
 
 Using the prompt from `extract_system.txt`, `pipeline.py` runs for each article: pulling relevant sentences from the text, drawing insights into the CAMO schema, and creating [ARTICLE CODE].json. After creating all the single article outputs, merge_graphs.py runs, merging all the JSON files into a completed causal graph in both JSON and YAML formats.
 
