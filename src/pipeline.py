@@ -1,18 +1,18 @@
 import csv, hashlib, json, os, re, sys, threading, time, yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from openai import AsyncOpenAI
 from linkml.validator import Validator
 from linkml.validator.plugins import JsonschemaValidationPlugin
 import asyncio
+import httpx
 
 SCHEMA = "schema/causalmosaic.yaml"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "output")
 WORKERS = int(os.environ.get("CAMO_WORKERS", "3"))       # Reduced from 10
-BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "180"))  # More time
+BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "120"))  # More time
 LIMIT = int(os.environ.get("CAMO_LIMIT", "0"))
 FORCE = os.environ.get("CAMO_FORCE") == "1"
-MAX_SENT = int(os.environ.get("CAMO_MAX_SENT", "300"))   # Larger batches = fewer API calls, better for flaky endpoint
+MAX_SENT = int(os.environ.get("CAMO_MAX_SENT", "100"))   # Larger batches = fewer API calls, better for flaky endpoint
 DEADLINE = time.time() + BUDGET_MIN * 60
 LOCK = threading.Lock()
 STATS = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "articles": 0, "claims": 0}
@@ -21,19 +21,23 @@ schema = yaml.safe_load(open(SCHEMA, encoding="utf-8"))
 def enum(n): return set(schema["enums"][n]["permissible_values"])
 PRED = {"causes", "contributes_to", "enables"} & enum("CausalPredicateEnum")
 LANG = enum("ClaimStrengthEnum") - {"associational"}
+ENRICH = os.environ.get("CAMO_ENRICH") == "1"
+# Codes copied from the organizers' README and the hand-checked example ONLY.
+VERIFIED_TERMS = {"sanguinaria canadensis": "NCBITaxon:3472", "alliaria petiolata": "NCBITaxon:126270"}
+VERIFIED_ATTRS = {"abundance": "PATO:0000070", "density": "PATO:0000574"}
+def resolve(term, table):
+    return table.get(term.strip().lower(), term.strip())
 ACC, QUAL, ETYPE = enum("PhilosophicalAccountEnum"), enum("StateOrChangeQualifierEnum"), enum("EntityTypeEnum")
 VALIDATOR = Validator(SCHEMA, validation_plugins=[JsonschemaValidationPlugin(closed=True)])
 
-# Async client for concurrent batch requests within an article
-aclient = AsyncOpenAI(
-    base_url=os.environ["BRINE_URL"],
-    api_key=os.environ["BRINE_API_KEY"],
-    timeout=300,           # Match original timeout for slow endpoint
-    max_retries=0
-)
+# HTTP client config for streaming (avoids AsyncOpenAI vLLM timeout bug)
+HTTP_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 MODEL = os.environ["BRINE_MODEL"]
 PROMPT = Path("prompts/extract_system.txt").read_text(encoding="utf-8")
 INDEX = {r["slug"]: r for r in csv.DictReader(open("corpus/index.csv", encoding="utf-8"))}
+BASE_URL = os.environ["BRINE_URL"]
+API_KEY = os.environ["BRINE_API_KEY"]
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
 SKIP_HEAD = re.compile(r"^(introduction|background|methods?|materials|study (site|area|system|species)|experimental|references?|literature cited|acknowledg|appendix|supplement)", re.I)
 CUES = re.compile(r"\b(affect|effect|increas|decreas|reduc|suppress|promot|enhanc|inhibit|limit|caus|result(ed|s)? in|lead|led|due to|because|driv|respond|response|declin|improv|benefit|facilitat|prevent|depress|greater|higher|lower|fewer|significan|effective|strateg|suggest|mitigat|rose\b|rise|indicat|harm|kill|no (significant )?(difference|change|effect))|P\s*[<=>]", re.I)
@@ -322,6 +326,14 @@ def guess_counted_entity(sent, s_node_id):
 COMPARATOR_RE = re.compile(r"(?:compared to|versus|vs\.?|relative to|than|among)\s+([^.]+)", re.I)
 DOSE_LEVEL_RE = re.compile(r"(higher|lower|intermediate|high|low)\s*(?:than|dose)?", re.I)
 
+DOSE_LEVEL_MAP = {
+    "higher": "higher_than_comparator",
+    "lower": "lower_than_comparator",
+    "intermediate": "intermediate",
+    "high": "high",
+    "low": "low",
+}
+
 def parse_comparator(sent):
     comps = []
     m = COMPARATOR_RE.search(sent)
@@ -336,7 +348,7 @@ def parse_comparator(sent):
                 comp["comparator_dose"] = {"numeric_value": float(dose_match.group(1)), "unit_text": dose_match.group(2)}
         m2 = DOSE_LEVEL_RE.search(desc)
         if m2:
-            comp["comparator_dose_level"] = m2.group(1).replace(" ", "_")
+            comp["comparator_dose_level"] = DOSE_LEVEL_MAP.get(m2.group(1).lower(), m2.group(1).replace(" ", "_"))
         comps.append(comp)
     return comps if comps else None
 
@@ -572,36 +584,87 @@ def parse_claims(txt):
             continue
     return None
 
-async def ask_async(numbered):
-    """Async version matching original pipeline settings."""
-    for attempt in range(2):  # Reduced from 4 attempts
+async def ask_async(numbered, depth=0):
+    """Async version using httpx streaming (avoids AsyncOpenAI vLLM timeout)."""
+    payload = {
+        "model": MODEL,
+        "temperature": 0,
+        "max_tokens": 3000,
+        "messages": [
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": numbered}
+        ],
+        "chat_template_kwargs": {"enable_thinking": False},
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    
+    for attempt in range(2):
         try:
-            r = await aclient.chat.completions.create(
-                model=MODEL, temperature=0, max_tokens=2048,  # Reduced to prevent reasoning timeout
-                messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": numbered}],
-                extra_body={"reasoning": {"max_tokens": 512}})  # Limit Qwen3 reasoning
+            content_chunks = []
+            finish_reason = None
+            usage = None
+            
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                async with client.stream("POST", f"{BASE_URL.rstrip('/')}/chat/completions", 
+                                       headers=HEADERS, json=payload) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        if chunk.get("usage"):
+                            usage = chunk["usage"]
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        if delta.get("content"):
+                            content_chunks.append(delta["content"])
+                        if choices[0].get("finish_reason"):
+                            finish_reason = choices[0]["finish_reason"]
+            
+            txt = "".join(content_chunks)
+            print("  visible chars:", len(txt), "| tokens:", (usage or {}).get("completion_tokens"),
+                "| claims:", txt.count('"id"'), "| finish:", finish_reason, flush=True)
+            print("  tail:", repr(txt[-200:]), flush=True)
             break
+            
         except Exception as e:
             print(f"  request failed: {type(e).__name__} attempt {attempt + 1}", flush=True)
-            await asyncio.sleep(2 * (2 ** attempt))  # 2, 4s
+            await asyncio.sleep(2 * (2 ** attempt))
     else:
         return None
 
-    choice = r.choices[0]
     with LOCK:
         STATS["calls"] += 1
-        if r.usage:
-            STATS["prompt_tokens"] += r.usage.prompt_tokens
-            STATS["completion_tokens"] += r.usage.completion_tokens
-        if choice.finish_reason == "length":
+        if usage:
+            STATS["prompt_tokens"] += usage.get("prompt_tokens", 0)
+            STATS["completion_tokens"] += usage.get("completion_tokens", 0)
+        if finish_reason == "length":
             STATS["truncated"] = STATS.get("truncated", 0) + 1
 
-    txt = re.sub(r"<think>.*?</think>", "", choice.message.content or "", flags=re.S)
-    txt = re.sub(r"\(think\).*?\(/think\)", "", txt, flags=re.S)
-    txt = re.sub(r"[\[\(]think[\]\)].*?[\[\(]/think[\]\)]", "", txt, flags=re.S)
+    txt = re.sub(r"thinking.*?/thinking", "", txt or "", flags=re.S)
+    txt = re.sub(r"\(think\)\.*?\/think\)", "", txt, flags=re.S)
+    txt = re.sub(r"[\[\(]think[\)].*?[\[\(]/think[\)]", "", txt, flags=re.S)
+    claims = parse_claims(txt)
     claims = parse_claims(txt)
     if claims is None:
-        print(f"  reply was not valid JSON (finish={choice.finish_reason})", flush=True)
+        print(f"  reply was not valid JSON (finish={finish_reason})", flush=True)
+    elif finish_reason == "length" and depth < 2:
+        ids = [c["id"] for c in claims if isinstance(c.get("id"), int)]
+        if ids:
+            rest = [l for l in numbered.split("\n")
+                    if (m := re.match(r"\[(\d+)\]", l)) and int(m.group(1)) > max(ids)]
+            if rest:
+                more = await ask_async("\n".join(rest), depth + 1)
+                claims += more or []
     return claims
 
 async def process_article_async(path):
@@ -633,6 +696,7 @@ async def process_article_async(path):
             continue
         for c in res:
             try:
+                if c.get("lang") == "no_relationship": c["neg"] = True
                 reason = check(c, sents)
                 if reason is None and c["id"] in seen:
                     reason = "duplicate_sentence"
@@ -684,18 +748,20 @@ def in_sentence(term, sent):
     return any(s in low for s in stems)
 
 def node(slug, n):
-    q, a, t = (n.get("q") or ""), (n.get("attr") or ""), n["term"].strip()
+    q = n.get("q") or ""
+    a = (n.get("attr") or "").split("|")[-1].strip()
+    t = n["term"].split("|")[-1].strip()
     d = {"id": f"causal_mosaic:{slug.lower()}_{h(slug, n.get('type', ''), t.lower(), a.lower(), q)}",
          "name": " ".join(x for x in [q, a, "of" if a else "", t] if x),
-         "entity_term": t}
+         "entity_term": resolve(t, VERIFIED_TERMS)}
     if n.get("type") in ETYPE: d["entity_type"] = n["type"]
-    if a: d["measured_attribute"] = a
+    if a: d["measured_attribute"] = resolve(a, VERIFIED_ATTRS)
     if q in QUAL: d["state_or_change_qualifier"] = q
     return d
 
 def build(slug, sents, c):
     if c["lang"] == "no_relationship" and c["effect"].get("q") == "unchanged":
-        c["effect"]["q"] = "decreased"
+        c["effect"]["q"] = ""
     sent = sents[c["id"]]
     s, o = node(slug, c["cause"]), node(slug, c["effect"])
     edge = {"id": f"causal_mosaic:edge_{h(s['id'], o['id'], c['pred'], sent)}",
@@ -707,9 +773,10 @@ def build(slug, sents, c):
             "source_document": slug}
     if c["lang"] == "no_relationship":
         edge["negated"] = True
-    s = enrich_node(s, sent)
-    o = enrich_node(o, sent)
-    edge = enrich_edge(edge, sents, slug)
+    if ENRICH:
+        s = enrich_node(s, sent)
+        o = enrich_node(o, sent)
+        edge = enrich_edge(edge, sents, slug)
     return [s, o], edge
 
 def source_doc(slug):
@@ -783,5 +850,6 @@ if __name__ == "__main__":
     if target.is_file():
         (OUT / "articles" / f"{target.stem}.json").unlink(missing_ok=True)
         print(asyncio.run(process_article_async(target)))
+        print(STATS)
     else:
         main(target)

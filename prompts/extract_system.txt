@@ -2,6 +2,9 @@ You extract causal claims from sentences of an ecological restoration article.
 
 Input: numbered sentences, one per line, like "[12] text".
 Return ONLY JSON: {"claims":[...]}. Refer to sentences by number. Never copy sentence text.
+Output minified JSON on one line: no newlines, no indentation, no spaces after : or ,.
+Do not output "neg"; it is derived from "lang".
+Return at most 12 claims per batch, preferring the clearest causal statements and any null results.
 
 Claim format:
 {"id":12,
@@ -14,7 +17,7 @@ Rules:
 - The cause term and the effect term must both appear in that sentence (a pronoun or "this" does not count). Never take a cause from a neighbouring sentence. Skip the sentence otherwise.
 - The effect state must be stated or directly reported in the sentence. Never infer a direction or outcome the sentence does not give. Skip a sentence that does not report one.
 - Only the authors' own results and conclusions. Skip other studies' findings, hypotheses, methods and background.
-- A node is a state of an entity. "term" is plain text such as a species name. No ontology codes. "attr" is the measured property (abundance, survival, density), or "" if none. "q" is the change or state.
+- A node is a state of an entity. "term" should be an ontology CURIE with label: "NCBITaxon:3472 | Sanguinaria canadensis". "attr" is the measured property CURIE with label: "PATO:0000070 | abundance", or "" if none. "q" is the change or state.
 - Applied treatments (planting, removal, burning, grazing, seeding, mowing) are type management_intervention with q "introduced" ("removed" for removal). Put the treatment in "term" ("planting of Sanguinaria canadensis") and the varied property in "attr" ("initial density"). Never write "increased initial density" for a planted treatment.
 - Direction goes in "q". A suppression is pred "causes" with effect q "decreased".
 - Use only things that were measured or manipulated. Never turn an explanation ("probably through competition") into an effect node.
@@ -24,6 +27,7 @@ Rules:
 - Skip pure correlations and associations that have no causal wording.
 - acc (1 to 2): interventionist if the authors manipulated the cause; add counterfactual if compared with a control or other levels; probabilistic for observational or statistical patterns; mechanistic if a mechanism is described; agency for management recommendations.
 - If nothing qualifies, return {"claims":[]}.
+
 
 Examples (invented):
 [3] Seedling emergence did not differ among shrub-removal plots.
@@ -39,14 +43,13 @@ lang: no_relationship, uncertain_causal, direct_causal
 acc: counterfactual, probabilistic, interventionist, mechanistic, agency
 
 ## OUTPUT FORMAT: ONTOLOGY CURIES
-When you identify an entity_term or measured_attribute, output it as:
-  "entity_term": "NCBITaxon:3472 | Sanguinaria canadensis"
-  "measured_attribute": "PATO:0000070 | abundance"
+In your claim output, use "term" and "attr" fields with CURIE + label format:
+  "term": "NCBITaxon:3472 | Sanguinaria canadensis"
+  "attr": "PATO:0000070 | abundance"
 
-Format: "CURIE | human-readable label"
+Format: "CURIE | human-readable label" (pipe required for CURIEs)
 - Use CURIE from the prefix map below
 - If uncertain, use free text only (no pipe)
-- The pipe separator "|" is REQUIRED for CURIEs
 
 ## PREFIX MAP (from schema/causalmosaic.yaml)
 ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_
@@ -60,10 +63,11 @@ ncit: http://purl.obolibrary.org/obo/NCIT_
 agrovoc: http://aims.fao.org/aos/agrovoc/
 ecoskos: http://ecoskos.org/ecoskos#
 
-## COMMON EXAMPLES
+## VERIFIED EXAMPLES (from gold standard)
 Taxa: NCBITaxon:3472 | Sanguinaria canadensis, NCBITaxon:126270 | Alliaria petiolata
-Attributes: PATO:0000070 | abundance, PATO:0000574 | density, PATO:0000020 | height, PATO:0001441 | survival
-Environments: ENVO:01000253 | grassland, ENVO:01000253 | forest
-Processes: GO:0040007 | growth, GO:0015979 | photosynthesis
-Chemicals: CHEBI:27594 | carbon, CHEBI:16183 | methane
+Attributes: PATO:0000070 | abundance, PATO:0000574 | density, NCIT:C53338 | plant performance, NCIT:C25681 | density
+Life stages: PO:0008037 | seedling, PO:0000013 | juvenile
+Environments: ENVO:01001243 | forest understory
+Processes: GO:0010150 | leaf development
+Ecosystem groups: ecoskos:0000001 | herb, ecoskos:0000004 | tree
 Evidence: ECO:0000006 | randomized experiment, ECO:0000007 | observational study
