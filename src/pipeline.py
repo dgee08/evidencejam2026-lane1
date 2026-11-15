@@ -9,7 +9,7 @@ import httpx
 SCHEMA = "schema/causalmosaic.yaml"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "output")
 WORKERS = int(os.environ.get("CAMO_WORKERS", "3"))       # Reduced from 10
-BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "120"))  # More time
+BUDGET_MIN = float(os.environ.get("CAMO_BUDGET_MIN", "180"))  # More time
 LIMIT = int(os.environ.get("CAMO_LIMIT", "0"))
 FORCE = os.environ.get("CAMO_FORCE") == "1"
 MAX_SENT = int(os.environ.get("CAMO_MAX_SENT", "100"))   # Larger batches = fewer API calls, better for flaky endpoint
@@ -31,7 +31,7 @@ ACC, QUAL, ETYPE = enum("PhilosophicalAccountEnum"), enum("StateOrChangeQualifie
 VALIDATOR = Validator(SCHEMA, validation_plugins=[JsonschemaValidationPlugin(closed=True)])
 
 # HTTP client config for streaming (avoids AsyncOpenAI vLLM timeout bug)
-HTTP_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+HTTP_TIMEOUT = httpx.Timeout(900.0, connect=10.0)
 MODEL = os.environ["BRINE_MODEL"]
 PROMPT = Path("prompts/extract_system.txt").read_text(encoding="utf-8")
 INDEX = {r["slug"]: r for r in csv.DictReader(open("corpus/index.csv", encoding="utf-8"))}
