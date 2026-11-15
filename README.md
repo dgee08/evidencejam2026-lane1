@@ -1,83 +1,99 @@
-# Evidence Jam 2026 — Team d (Lane 1: Causal Annotation) 
-
-## Our challenge
-
-> **Create a script that annotates the scientific journal articles, contained in**
-> **`corpus/` in markdown format, using the Causal Mosaic Schema (CAMO). The annotations**
-> **should be in YAML and JSON. Use ontologies where-ever possible.**
-
-We were tasked with creating a script that reads the articles in `corpus/` and produces one merged CAMO graph, in both YAML and JSON. The graph should be valid under `schema/causalmosaic.yaml`, displaying causal claims, their topics, strengths, and locations in the original text.
-
-## What's in this repo
-
-```
-corpus/              308 ecological restoration articles, one markdown file each
-corpus/index.csv     Data on slug, DOI, title, authors, year, journal, word count
-example/             Hand-checked CAMO annotation of one article
-out/                 WHAT IS THIS FOLDER FOR?
-prompts/             Written prompt for Qwen to understand the project
-schema/              The Causal Mosaic Schema (CAMO) v0.10.0, as LinkML
-src/                 Source code for extraction pipeline and creation of merged graph
-BACKGROUND.md        Original project README
-run.sh               File to organize entire process into one command
-```
-
-### `corpus/`
-
-Each article is named by a short slug (e.g. `YKQQZV93.md`) and was converted
-from PDF, so conversion artefacts were expected: image placeholders, broken tables,
-headers and footers mid-paragraph, and inline tags. Use
-`corpus/index.csv` to look up an article's DOI and bibliographic details.
-
-### `example/`
-
-Worked annotation showing what good output looks like: `Murphy2005.yaml`
-and its source: `Murphy2005.pdf`
-
-### `schema/causalmosaic.yaml`
-
-The Causal Mosaic Schema is a way of describing causal relationships between 
-populations of taxa, environmental variables, composite variables, management
-interventions and environmental processes. The header comments and
-the `description` on every class, slot, and enum are the annotation guide.
-
-### `src/`
-
-The source code in this repo includes: 
-- `pipeline.py`: Our extraction pipeline, which builds Causal Mosaic Schema files for each article. Our final version uses a whitelist to select important parts of articles and runs workers asynchronously to decrease endpoint timeouts.
-- `pipeline_original.py`: The original pipeline iteration. This version uses a blacklist to skip less useful parts of articles and runs workers in sync.
-- `merge_graphs.py`: Program to merge single article outputs into final YAML/JSON schema.
-
-An annotation essentials guide can be found at [this link](https://tim-a.ca/causalmosaic/camo_annotation_essentials.html). 
-
 ## Our Solution
 
-Our solution to Lane 1 involves a simple data extraction pipeline, shown below.
+Our solution is a two-stage pipeline: extract causal claims from each article, then merge them into one graph.
 
 ![Extraction pipeline diagram](assets/extraction_pipeline.png)
 
-Using the prompt from `extract_system.txt`, `pipeline.py` runs for each article: pulling relevant sentences from the text, drawing insights into the CAMO schema, and creating [ARTICLE CODE].json. After creating all the single article outputs, merge_graphs.py runs, merging all the JSON files into a completed causal graph in both JSON and YAML formats.
+1. **Extract:** For each article, `pipeline.py` pulls out the relevant sentences, sends them to the LLM with the prompt in `prompts/extract_system.txt`, maps the results into the CAMO schema, and writes `[ARTICLE CODE].json`.
+2. **Merge:** Once every article has been processed, `merge_graphs.py` combines all the JSON files into a single causal graph in both JSON and YAML.
 
-### How pipeline.py works
+---
 
-`pipeline.py` first finds sentences that match the causal keyword filter (`CUES`) and sit under the whitelisted headings. If there are less than 3 sentences found, then the code will drop the whitelisted headings and search for `CUES` matches in the full text.
+### How `pipeline.py` works
 
-The next step is to number the sentences and send them in batches of `CAMO_MAX_SENT` to an LLM following the prompt in `prompts/extract_system.txt`. Batches from one article run concurrently, while articles run in a thread pool. 
+1. **Select sentences.** The pipeline keeps sentences that match the causal keyword filter (`CUES`) and sit under whitelisted headings. If fewer than 3 sentences are found, it drops the heading whitelist and searches the full text for `CUES` matches.
+2. **Batch and send to the LLM.** Sentences are numbered and sent in batches of `CAMO_MAX_SENT`, following `prompts/extract_system.txt`. Batches from one article run concurrently, and articles run in a thread pool.
+3. **Validate each claim.** A claim returned by the LLM is kept only if it has:
+   - a valid sentence ID
+   - a valid predicate
+   - a valid causal language value
+   - a valid philosophical account
+   - a negation consistent with `no_relationship`
+   - cause and effect terms that appear in the sentence
 
-Each claim returned by the LLM must have a valid sentence id, predicate, causal language, philosophical account, negation consistent with `no_relationship`, and cause and effect terms that appear in the sentence. Claims that fail to meet any of these conditions are dropped and tallied in the article log. 
+   Claims that fail any check are dropped and tallied in the article log.
+4. **Build nodes and edges.** Each passing claim becomes two nodes (subject and object) and one edge, each with a deterministic hashed ID.
+5. **Add rule-based fields.** Pattern-matching parsers on the claim's source sentence fill in extra fields:
 
-Each claim that passes becomes two nodes (subject and object node) and one edge, each with a deterministic hashed ID. 
+   | Applied to | Fields |
+   | ---------- | ------ |
+   | **Edges** | `dose`, `comparator`, `temporal_extent`, `strength`, `certainty_grade`, `evidential_basis`, `direction`, `context_dependence`, `scope`, `ecosystem_context`, `mediation`, `proximate_distal` |
+   | **Nodes** | `life_stage`, `life_stage_term`, `applied_to` |
 
-Next, rule-based parsers add extra fields by matching patterns in the claim's source sentence. Edges get `dose`, `comparator`, `temporal_extent`, `strength`, `certainty_grade`, `evidential_basis`, `direction`, `context_dependence`, `scope`, `ecosystem_context`, `mediation` and `proximate_distal`. Nodes get `life_stage`, `life_stage_term` and `applied_to`. The LLM can return ontology terms as `CURIE | label`. The pipeline parses these and stores the CURIE in `entity_term` or `measured_attribute`. If a value has no valid CURIE, it is kept as free text. 
+6. **Parse ontology terms.** The LLM can return ontology terms as `CURIE | label`. The pipeline stores the CURIE in `entity_term` or `measured_attribute`. If a value has no valid CURIE, it is kept as free text.
+7. **Validate each article graph.** Each article graph is checked against the LinkML schema. If validation fails, each claim is re-validated on its own, and any that fail are dropped and logged under `invalid`.
+8. **Merge.** The article graphs are merged into one graph, which is validated again.
 
-Next, each article graph is validated against the LinkML schema. If validation fails, each claim is re-validated on its own, and the ones that fail are dropped and logged under `invalid`. 
+---
 
-Finally, the article graphs are merged into one graph and validated again.
+## How `merge_graphs.py` works
 
-## How merge_graphs.py works
+`merge_graphs.py` merges the per-article Causal Mosaic graphs into a single validated `CausalGraph`. Run it from the project root.
 
-This script merges per-article Casual Mosaic graphs into a single validated CasualGraph. It is run from the project root and it reads each article JSON in output/articles/ with bibliographic metadata from corpus/index.csv. Nodes are deduplicated across articles with the first node seen winning. Edges are remapped to the merged node IDs, tagged with their source article slug, and given new hashed IDs. Each edge is traceable to its source as they are not deduplicated across articles. As a result, with the provenance metadata and a source_documents list limited to articles with a DOI, is written to output/merged_causal_graph.yaml and .json. The schema version and corpus description are hard-coded so merged nodes do not record which articles they came from, and the script exits with an error if no articles load. 
+**Inputs**
+- Article JSON files in `output/articles/`
+- Bibliographic metadata from `corpus/index.csv`
+
+**Outputs**
+- `output/merged_causal_graph.yaml`
+- `output/merged_causal_graph.json`
+
+**Merge behavior**
+- **Nodes** are deduplicated across articles; the first node seen wins.
+- **Edges** are remapped to the merged node IDs, tagged with their source article slug, and given new hashed IDs. They are *not* deduplicated across articles, so every edge stays traceable to its source.
+- **Provenance** metadata is included, and `source_documents` is limited to articles with a DOI.
+
+**Notes**
+- The schema version and corpus description are hard-coded.
+- Because of this, merged nodes do not record which articles they came from.
+- The script exits with an error if no articles load.
+
+---
 
 ## Running the Program
 
-The shell script run.sh file acts as the entry point for the Lane 1 pipeline. Run it as ./run.sh [corpus_dir] [output_dir], which defaults to corpus and output. Prior to doing anything, the program first checks that the endpoint, model name, and key is set and it exits with and error naming any that are missing. Once it starts, it works in three steps. Firstly, it read each article in your corpus folder and builds a cause-and-effect graph for it. Secondly, it combines all of those graphs into one merged graph, removing duplicate nodes along the way. Thirdly, it checks the merged graph against the CausalMosaic schema and prints either VALIDATION PASSED or a list of what needs fixing. If any steps fail, the script stops so you do not end up with partial results. When it finishes, there will be a merged graph in output/merged_causal_graph.yaml and .json, with individual article graphs in output/articles/. As the merge and validation steps always use the output/ folder, make sure to choose the same one or else the following steps will not find the files. 
+`run.sh` is the single entry point for the Lane 1 pipeline.
+
+```bash
+./run.sh [corpus_dir] [output_dir]
+```
+
+Both arguments are optional and default to `corpus` and `output`.
+
+### Prerequisites
+
+Before doing anything, `run.sh` checks that the LLM endpoint, model name, and API key are set. It exits with an error naming any that are missing.
+
+```bash
+export BRINE_URL="..."       # LLM endpoint URL
+export BRINE_MODEL="..."     # model name
+export BRINE_API_KEY="..."   # your API key
+```
+
+### What it does
+
+1. **Extract.** Reads each article in the corpus folder and builds a cause-and-effect graph for it.
+2. **Merge.** Combines all the article graphs into one merged graph, removing duplicate nodes along the way.
+3. **Validate.** Checks the merged graph against the Causal Mosaic schema and prints either `VALIDATION PASSED` or a list of what needs fixing.
+
+If any step fails, the script stops so you don't end up with partial results.
+
+### Output
+
+| Path | Contents |
+| ---- | -------- |
+| `output/merged_causal_graph.yaml` | Final merged graph (YAML) |
+| `output/merged_causal_graph.json` | Final merged graph (JSON) |
+| `output/articles/` | Individual article graphs |
+
+> **Note:** The merge and validation steps always read from `output/`. If you pass a different output directory, the later steps won't find the files, so keep the same folder throughout.
