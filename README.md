@@ -62,130 +62,38 @@ Our solution is a two-stage pipeline: extract causal claims from each article, t
 
 ## Running the Program
 
-### Quick Start (One Command)
-
-```bash
-# 1. Install dependencies (one-time)
-pip install -r requirements.txt
-
-# 2. Set required environment variables
-export BRINE_URL="https://your-endpoint/v1"
-export BRINE_MODEL="Qwen3.8-27B"
-export BRINE_API_KEY="sk-..."
-
-# 3. Run the pipeline
-./run.sh corpus/ output/
-```
-
-That's it. The script handles extraction, merging, and validation automatically.
-
----
-
-### Detailed Instructions
-
-#### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-**Key packages:** `openai`, `httpx`, `linkml`, `pyyaml`, `pandas`
-
-#### 2. Configure LLM Endpoint (Required)
-
-Set these **three** environment variables before running:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `BRINE_URL` | LiteLLM/vLLM endpoint URL | `https://brine.sharcnet.ca/v1` |
-| `BRINE_MODEL` | Model name on the endpoint | `Qwen3.8-27B` |
-| `BRINE_API_KEY` | Your API key | `sk-abc123...` |
-
-```bash
-export BRINE_URL="https://brine.sharcnet.ca/v1"
-export BRINE_MODEL="Qwen3.8-27B"
-export BRINE_API_KEY="sk-..."
-```
-
-#### 3. Run the Pipeline
+`run.sh` is the single entry point for the Lane 1 pipeline.
 
 ```bash
 ./run.sh [corpus_dir] [output_dir]
 ```
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `corpus_dir` | `corpus/` | Folder containing article `.md` files |
-| `output_dir` | `output/` | Where to write results |
+Both arguments are optional and default to `corpus` and `output`.
 
-**Examples:**
+### Prerequisites
+
+Before doing anything, `run.sh` checks that the LLM endpoint, model name, and API key are set. It exits with an error naming any that are missing.
+
 ```bash
-./run.sh                    # Uses corpus/ and output/
-./run.sh corpus/ output/    # Explicit
-./run.sh /data/articles /results  # Custom paths
+export BRINE_URL="..."       # LLM endpoint URL
+export BRINE_MODEL="..."     # model name
+export BRINE_API_KEY="..."   # your API key
 ```
 
----
+### What it does
 
-### What the Script Does
+1. **Extract.** Reads each article in the corpus folder and builds a cause-and-effect graph for it.
+2. **Merge.** Combines all the article graphs into one merged graph, removing duplicate nodes along the way.
+3. **Validate.** Checks the merged graph against the Causal Mosaic schema and prints either `VALIDATION PASSED` or a list of what needs fixing.
 
-| Step | Script | Description |
-|------|--------|-------------|
-| 1 | `pipeline.py` | Processes each article → extracts causal claims → builds CAMO graph → saves `output/articles/[SLUG].json` |
-| 2 | `merge_graphs.py` | Merges all article graphs → deduplicates nodes → adds DOIs from `corpus/index.csv` |
-| 3 | Validation | Runs LinkML schema validation on merged graph |
+If any step fails, the script stops so you don't end up with partial results.
 
-The script stops on any failure (extraction error, merge error, validation error).
+### Output
 
----
+| Path | Contents |
+| ---- | -------- |
+| `output/merged_causal_graph.yaml` | Final merged graph (YAML) |
+| `output/merged_causal_graph.json` | Final merged graph (JSON) |
+| `output/articles/` | Individual article graphs |
 
-### Expected Outputs
-
-```
-output/
-├── merged_causal_graph.yaml    # Final merged graph (YAML)
-├── merged_causal_graph.json    # Final merged graph (JSON)
-└── articles/
-    ├── [SLUG].json             # Per-article graph
-    └── [SLUG].log.json         # Extraction log (sentences, claims, drops)
-```
-
----
-
-### Configuration (Optional)
-
-Tune behavior via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CAMO_WORKERS` | `3` | Concurrent articles (thread pool) |
-| `CAMO_MAX_SENT` | `100` | Max sentences per LLM batch |
-| `CAMO_BUDGET_MIN` | `120` | Time budget in minutes (hard deadline) |
-| `CAMO_LIMIT` | `0` | Process only first N articles (0 = all) |
-| `CAMO_FORCE` | `0` | `1` = reprocess cached articles |
-
-**Example:**
-```bash
-CAMO_WORKERS=5 CAMO_BUDGET_MIN=180 ./run.sh
-```
-
----
-
-### Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| `BRINE_URL not set` | Export all three required env vars |
-| `ModuleNotFoundError: httpx` | Run `pip install -r requirements.txt` |
-| Timeout / slow | Increase `CAMO_BUDGET_MIN` or decrease `CAMO_MAX_SENT` |
-| Validation fails | Check `output/articles/[SLUG].log.json` for invalid claims |
-| No articles processed | Verify `corpus/` has `.md` files and `corpus/index.csv` exists |
-
----
-
-### Performance Notes
-
-- **~308 articles** in corpus
-- **~1–3 minutes per article** (depends on endpoint speed)
-- **~2–4 hours** for full run on shared endpoint
-- Token usage logged in `STATS` at end of run
+> **Note:** The merge and validation steps always read from `output/`. If you pass a different output directory, the later steps won't find the files, so keep the same folder throughout.
